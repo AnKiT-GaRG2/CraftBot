@@ -385,6 +385,14 @@ class AgentAppRunner:
         # error, saves NOTHING and still exits 0 (IP Manager 2026-09-29: the
         # .superuser file and the database disagreed from then on, every
         # CLI read ran unauthenticated and came back "not found").
+        #
+        # This is a full PocketBase bootstrap, not a quick write: before the
+        # command runs, PocketBase applies pending migrations and deletes
+        # request logs older than logs.maxDays, and both scale with the app's
+        # data. A 60s cap killed a healthy run mid-delete on an app with 5M
+        # log rows (Command Center, 2026-10-07); the delete rolled back, so
+        # every launch redid it and failed the same way. Same budget as the
+        # other bootstrapping commands (kit-sync, adapter-sync).
         code, out = await self._run(
             [
                 str(pb_bin),
@@ -400,7 +408,7 @@ class AgentAppRunner:
                 email,
                 password,
             ],
-            timeout=60,
+            timeout=GATE_TIMEOUT_S,
         )
         # PocketBase's CLI exits 0 even when a command fails, so the exit
         # code alone proves nothing: the save is confirmed from the database
@@ -412,8 +420,12 @@ class AgentAppRunner:
             # admin-installer token (observed live 2026-08-05, kanban_board
             # marketplace install) — a jarring tab AND an unauthenticated
             # admin takeover link. A failed launch with evidence beats that.
-            # Never include the password in the error.
-            tail = out[-300:].replace(password, "<password>")
+            # Never include the password in the error. A timeout's output is
+            # only the echoed command, whose last 300 chars hid the cause.
+            if code == 124:
+                tail = f"PocketBase did not finish within {GATE_TIMEOUT_S}s"
+            else:
+                tail = out[-300:].replace(password, "<password>")
             raise RuntimeError(
                 f"superuser upsert failed for {project_dir.name} — refusing "
                 f"to serve without one (PocketBase would open its installer "
