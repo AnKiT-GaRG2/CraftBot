@@ -34,7 +34,21 @@ the pane returns to conversation and stays closed across reloads for that sessio
 until the user reopens it or a new output arrives. Loading older history does not
 reopen it. Desktop shows conversation and output side by side; narrow screens
 switch between them. Phone preview and fullscreen resize the canvas without
-reloading the document. Reload, reset, and pause remain available in the toolbar.
+reloading the document. Drag the divider to adjust the conversation/output split;
+Arrow keys, Home and End also resize it, and double-click restores the default.
+The split is remembered as a browser preference. At workspace widths below 860px,
+the output takes the available space instead of squeezing both views together.
+One adaptive header holds the output title, device preview, revision selector,
+reload and panel controls. The preview sits on a separate inset canvas.
+Pause shows a direct Resume button and retains saved progress. Reset asks for an
+in-panel confirmation before clearing only that output's state. Preview errors
+show a retry action with technical details behind a disclosure.
+Panel entry/exit and fullscreen animate the shared grid tracks, so the chat,
+divider, output and its toolbar move together. The toolbar keeps the same two-row
+composition in split and fullscreen views. Preview sizing and menus use short eased motion.
+Resizing by dragging stays immediate, and existing document state is retained.
+Motion is disabled when the browser requests reduced motion. Generated documents
+are also instructed to honor that preference and keep controls responsive.
 
 Generated content receives a small base stylesheet and the host's public design
 tokens: `--cb-bg`, `--cb-surface`, `--cb-text`, `--cb-muted`, `--cb-border`,

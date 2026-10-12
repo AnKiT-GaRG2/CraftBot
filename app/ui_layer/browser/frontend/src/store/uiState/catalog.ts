@@ -90,6 +90,10 @@ export const UI_STATE = {
     artifactState: defineUiStateFamily<Record<string, unknown>>('chat.artifactState', {}, 'session'),
     /** By session id: selected output revision, or 'closed' for conversation-only. */
     outputSelection: defineUiStateFamily('chat.outputSelection', '', 'session'),
+    /** Conversation's share of the desktop output workspace. */
+    outputSplitRatio: defineUiState('chat.outputSplitRatio', 0.42, 'preference', {
+      isValid: value => typeof value === 'number' && value > 0 && value < 1,
+    }),
     /** By question message id: the typed free-text answer. */
     questionAnswerDraft: defineUiStateFamily('chat.questionAnswerDraft', '', 'session'),
     /** Newest message id seen per session (unread dots); synced across tabs. */

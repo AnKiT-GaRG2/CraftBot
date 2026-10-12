@@ -125,7 +125,10 @@ export function buildDocument(artifact: GenerativeUIArtifact, state: Record<stri
   const html = parsed.childNodes.find((node): node is DefaultTreeAdapterTypes.Element => 'tagName' in node && node.tagName === 'html')!
   const head = html.childNodes.find((node): node is DefaultTreeAdapterTypes.Element => 'tagName' in node && node.tagName === 'head')!
   const baseStyles = '<style>*,*::before,*::after{box-sizing:border-box}html{font-family:var(--cb-font);color:var(--cb-text);background:var(--cb-bg)}body{margin:0;font-size:15px;line-height:1.6}button,input,select,textarea{font:inherit;color:inherit}button{cursor:pointer}h1,h2,h3{line-height:1.2;letter-spacing:-.025em}h1{font-size:26px}h2{font-size:18px}p{color:var(--cb-muted)}button:focus-visible,input:focus-visible,select:focus-visible,textarea:focus-visible{outline:2px solid var(--cb-accent);outline-offset:3px}</style>'
-  const prefix = parseFragment('<meta charset="utf-8">' + csp.outerHTML + viewport.outerHTML + baseStyles + bootstrap.outerHTML)
+  // Small fallback interactions also improve existing generated documents.
+  // A reduced-motion preference overrides document CSS, including smooth scroll.
+  const motionStyles = '<style>@media(prefers-reduced-motion:no-preference){button,input,select,textarea{transition:background-color 160ms ease,border-color 160ms ease,color 160ms ease,box-shadow 160ms ease}}@media(prefers-reduced-motion:reduce){*,*::before,*::after{animation-duration:.01ms!important;animation-iteration-count:1!important;transition-duration:0s!important;scroll-behavior:auto!important}}</style>'
+  const prefix = parseFragment('<meta charset="utf-8">' + csp.outerHTML + viewport.outerHTML + baseStyles + motionStyles + bootstrap.outerHTML)
   for (const node of prefix.childNodes) node.parentNode = head
   head.childNodes.unshift(...prefix.childNodes)
   return '<!doctype html>\n' + serializeOuter(html)

@@ -5,6 +5,7 @@ async function previewAction(page: Page, name: string) {
   const button = page.getByRole('button', { name, exact: true })
   if (!await button.isVisible()) await page.getByLabel('Preview options', { exact: true }).click()
   await button.click()
+  if (name === 'Reset saved progress') await page.getByRole('button', { name: 'Reset progress', exact: true }).click()
 }
 async function open(page: Page) {
   await page.route('**/api/agent-profile-picture', route => route.fulfill({ contentType: 'image/svg+xml', body: '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 32 32"><circle cx="16" cy="16" r="14" fill="#FF4F18"/></svg>' }))
@@ -110,10 +111,10 @@ test('phone viewport and fullscreen change canvas space without reloading the do
   await preview(page).getByRole('button', { name: 'Next step' }).click()
   const document = await page.locator('iframe').getAttribute('srcdoc')
   await page.getByRole('button', { name: 'Phone', exact: true }).click()
-  expect((await page.locator('iframe').boundingBox())!.width).toBeLessThanOrEqual(390)
+  await expect.poll(async () => (await page.locator('iframe').boundingBox())!.width).toBeLessThanOrEqual(390)
   await page.getByRole('button', { name: 'Fullscreen output', exact: true }).click()
   await page.getByRole('button', { name: 'Desktop', exact: true }).click()
-  expect((await page.locator('iframe').boundingBox())!.width).toBeGreaterThan(1000)
+  await expect.poll(async () => (await page.locator('iframe').boundingBox())!.width).toBeGreaterThan(1000)
   expect(await page.locator('iframe').getAttribute('srcdoc')).toBe(document)
   await expect(preview(page).getByRole('heading', { name: 'Step 2 of 4' })).toBeVisible()
   await page.setViewportSize({ width: 390, height: 844 })
@@ -135,6 +136,157 @@ test('ready previews stay ready when the app synchronizes its language', async (
   await expect(page.getByRole('alert')).toHaveCount(0)
   await preview(page).getByRole('button', { name: 'Next step' }).click()
   await expect(preview(page).getByRole('heading', { name: 'Step 2 of 4' })).toBeVisible()
+})
+
+test('reopening during an animated close keeps the running document and progress', async ({ page }) => {
+  await open(page)
+  await preview(page).getByRole('button', { name: 'Next step' }).click()
+  const document = await page.locator('iframe').getAttribute('srcdoc')
+  // Pause the native exit at its start to exercise cancellation deterministically.
+  await page.getByRole('button', { name: 'Back to conversation' }).evaluate(element => {
+    element.addEventListener('click', () => requestAnimationFrame(() => {
+      document.getAnimations().forEach(animation => animation.pause())
+    }), { once: true })
+  })
+  await page.getByRole('button', { name: 'Back to conversation' }).click()
+  await page.getByRole('button', { name: 'Show outputs', exact: true }).click()
+  await expect(preview(page).getByRole('heading', { name: 'Step 2 of 4' })).toBeVisible()
+  expect(await page.locator('iframe').getAttribute('srcdoc')).toBe(document)
+  await page.getByRole('button', { name: 'Back to conversation' }).click()
+  await expect(page.locator('iframe')).toHaveCount(0)
+})
+
+test('reduced motion disables panel and preview transitions without changing controls', async ({ page }) => {
+  await page.emulateMedia({ reducedMotion: 'reduce' })
+  await open(page)
+  await preview(page).getByRole('button', { name: 'Next step' }).click()
+  await page.getByRole('button', { name: 'Phone', exact: true }).click()
+  expect((await page.locator('iframe').boundingBox())!.width).toBeLessThanOrEqual(390)
+  const panel = page.getByRole('region', { name: 'Output panel' })
+  await expect.poll(() => panel.evaluate(element => element.getAnimations({ subtree: true }).length)).toBe(0)
+  await expect(preview(page).getByRole('button', { name: 'Next step' })).toHaveCSS('transition-duration', '0s')
+  await page.getByRole('button', { name: 'Fullscreen output', exact: true }).click()
+  expect(await panel.evaluate(element => element.getAnimations({ subtree: true }).length)).toBe(0)
+  await expect(preview(page).getByRole('heading', { name: 'Step 2 of 4' })).toBeVisible()
+  await page.getByRole('button', { name: 'Back to conversation' }).click()
+  await expect(page.locator('iframe')).toHaveCount(0)
+})
+
+test('chat and toolbar move through intermediate layouts when closing, opening and expanding', async ({ page }) => {
+  await page.setViewportSize({ width: 1440, height: 900 })
+  await open(page)
+  await preview(page).getByRole('button', { name: 'Next step' }).click()
+  const document = await page.locator('iframe').getAttribute('srcdoc')
+  const workspace = page.getByRole('region', { name: 'Output panel', includeHidden: true }).locator('..')
+  const chat = workspace.locator(':scope > div').first()
+  const splitWidth = (await chat.boundingBox())!.width
+
+  const pauseAtStart = async (name: string) => {
+    await page.getByRole('button', { name, exact: true }).evaluate(element => {
+      element.addEventListener('click', () => requestAnimationFrame(() => {
+        for (const animation of document.getAnimations()) {
+          if (animation.effect instanceof KeyframeEffect && animation.effect.getKeyframes().some(frame => 'gridTemplateColumns' in frame)) {
+            animation.pause()
+            animation.currentTime = 0
+          }
+        }
+      }), { once: true })
+    })
+    await page.getByRole('button', { name, exact: true }).click()
+  }
+  const seek = async (time: number | 'finish') => {
+    await page.evaluate(time => {
+      for (const animation of document.getAnimations()) {
+        if (animation.effect instanceof KeyframeEffect && animation.effect.getKeyframes().some(frame => 'gridTemplateColumns' in frame)) {
+          if (time === 'finish') animation.finish()
+          else animation.currentTime = time
+        }
+      }
+    }, time)
+  }
+
+  await pauseAtStart('Back to conversation')
+  expect((await chat.boundingBox())!.width).toBeCloseTo(splitWidth, 0)
+  await seek(150)
+  const closingWidth = (await chat.boundingBox())!.width
+  expect(closingWidth).toBeGreaterThan(splitWidth + 1)
+  expect(closingWidth).toBeLessThan(1439)
+  await seek('finish')
+  await expect(page.locator('iframe')).toHaveCount(0)
+
+  await pauseAtStart('Show outputs')
+  expect((await chat.boundingBox())!.width).toBeCloseTo(1440, 0)
+  await seek(150)
+  const openingWidth = (await chat.boundingBox())!.width
+  expect(openingWidth).toBeGreaterThan(splitWidth + 1)
+  expect(openingWidth).toBeLessThan(1439)
+  await seek('finish')
+  await expect(preview(page).getByRole('heading', { name: 'Step 2 of 4' })).toBeVisible()
+
+  const reopenedDocument = await page.locator('iframe').getAttribute('srcdoc')
+  const phoneY = (await page.getByRole('button', { name: 'Phone', exact: true }).boundingBox())!.y
+  await pauseAtStart('Fullscreen output')
+  expect((await chat.boundingBox())!.width).toBeCloseTo(splitWidth, 0)
+  await seek(150)
+  const fullscreenWidth = (await chat.boundingBox())!.width
+  expect(fullscreenWidth).toBeGreaterThan(1)
+  expect(fullscreenWidth).toBeLessThan(splitWidth - 1)
+  expect((await chat.locator(':scope > div').last().boundingBox())!.width).toBeGreaterThanOrEqual(splitWidth - 1)
+  expect((await page.getByRole('button', { name: 'Phone', exact: true }).boundingBox())!.y).toBeCloseTo(phoneY, 0)
+  await seek('finish')
+  expect((await page.getByRole('button', { name: 'Phone', exact: true }).boundingBox())!.y).toBeCloseTo(phoneY, 0)
+  expect(await page.locator('iframe').getAttribute('srcdoc')).toBe(reopenedDocument)
+  expect(reopenedDocument).not.toBe(document) // Closing unloads; expanding preserves.
+})
+
+test('resize supports dragging and keyboard, persists, and preserves the running document', async ({ page }) => {
+  await page.setViewportSize({ width: 1440, height: 900 })
+  await open(page)
+  await preview(page).getByRole('button', { name: 'Next step' }).click()
+  const document = await page.locator('iframe').getAttribute('srcdoc')
+  const handle = page.getByRole('separator', { name: 'Resize conversation and output' })
+  const initial = Number(await handle.getAttribute('aria-valuenow'))
+  await handle.press('ArrowRight')
+  await expect.poll(async () => Number(await handle.getAttribute('aria-valuenow'))).toBeGreaterThan(initial)
+  const rect = (await handle.boundingBox())!
+  await page.mouse.move(rect.x + rect.width / 2, rect.y + rect.height / 2)
+  await page.mouse.down()
+  await page.mouse.move(rect.x - 140, rect.y + rect.height / 2, { steps: 8 })
+  await page.mouse.up()
+  const resized = await handle.getAttribute('aria-valuenow')
+  expect(Number(resized)).toBeLessThan(initial)
+  await expect(preview(page).getByRole('heading', { name: 'Step 2 of 4' })).toBeVisible()
+  expect(await page.locator('iframe').getAttribute('srcdoc')).toBe(document)
+  await page.reload()
+  await expect(handle).toHaveAttribute('aria-valuenow', resized!)
+  await handle.press('Home')
+  await expect.poll(async () => await handle.getAttribute('aria-valuenow')).toBe(await handle.getAttribute('aria-valuemin'))
+  await handle.press('End')
+  await expect.poll(async () => await handle.getAttribute('aria-valuenow')).toBe(await handle.getAttribute('aria-valuemax'))
+  // A wide browser can still contain a narrow workspace next to the app sidebar.
+  await handle.locator('..').evaluate(element => (element as HTMLElement).style.width = '800px')
+  await expect(handle).toBeHidden()
+  await expect(page.getByRole('region', { name: 'Output panel' })).toBeVisible()
+  expect(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth)).toBe(true)
+})
+
+test('reset requires confirmation, can be cancelled, and preview options dismiss outside', async ({ page }) => {
+  await open(page)
+  await preview(page).getByLabel('Servings').fill('4')
+  await preview(page).getByLabel('Servings').press('Tab')
+  await page.getByLabel('Preview options', { exact: true }).click()
+  await page.getByRole('button', { name: 'Reset saved progress', exact: true }).click()
+  await expect(page.getByRole('button', { name: 'Cancel', exact: true })).toBeFocused()
+  await expect(preview(page).getByLabel('Servings')).toHaveValue('4')
+  await page.getByRole('button', { name: 'Cancel', exact: true }).click()
+  await expect(preview(page).getByLabel('Servings')).toHaveValue('4')
+  await page.getByRole('heading', { name: 'Cooking guide', exact: true }).click()
+  await expect(page.getByRole('button', { name: 'Reset saved progress' })).toBeHidden()
+  await page.getByLabel('Preview options', { exact: true }).click()
+  await preview(page).getByLabel('Servings').click()
+  await expect(page.getByRole('button', { name: 'Reset saved progress' })).toBeHidden()
+  await previewAction(page, 'Reset saved progress')
+  await expect(preview(page).getByLabel('Servings')).toHaveValue('2')
 })
 
 test('quick history hydration creates a ready frame with the latest token', async ({ page }) => {
