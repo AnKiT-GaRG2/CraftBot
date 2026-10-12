@@ -3345,7 +3345,7 @@ UI in {project.path}/frontend/src/app/."""
         app_name: str,
         app_description: str,
         custom_fields: Optional[Dict[str, str]] = None,
-        repo_url: str = "https://github.com/CraftOS-dev/living-ui-marketplace/",
+        repo_url: str = marketplace_source.REPO_URL,
         project_id: Optional[str] = None,
     ) -> Dict[str, Any]:
         """
@@ -3409,16 +3409,12 @@ UI in {project.path}/frontend/src/app/."""
             parts = repo_url.rstrip("/").split("/")
             owner = parts[-2]
             repo = parts[-1]
-            zip_url = marketplace_source.zip_url(owner, repo)
-            logger.info(f"[AGENT_APP:MARKETPLACE] Downloading {app_id} from {zip_url}")
-
-            import ssl
-            import certifi
-
-            ssl_ctx = ssl.create_default_context(cafile=certifi.where())
-            req = urllib.request.Request(zip_url, headers={"User-Agent": "CraftBot"})
-            response = urllib.request.urlopen(req, timeout=60, context=ssl_ctx)
-            zip_data = response.read()
+            logger.info(
+                f"[AGENT_APP:MARKETPLACE] Downloading {app_id} from {owner}/{repo}"
+            )
+            zip_data = await asyncio.to_thread(
+                marketplace_source.download_archive, owner, repo
+            )
 
             # Extract just the app folder from the zip
             with zipfile.ZipFile(io.BytesIO(zip_data)) as zf:
