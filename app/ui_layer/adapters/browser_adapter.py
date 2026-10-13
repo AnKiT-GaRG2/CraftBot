@@ -2007,6 +2007,9 @@ A quick Q&A will now begin to understand your objectives to serve you better:"""
                 data.get("requestId"),
             )
 
+        elif msg_type == "figma_canvas_control":
+            await self._handle_figma_canvas_control(data)
+
         # Agent App settings handlers
         elif msg_type == "agent_app_settings_get":
             await self._handle_agent_app_settings_get()
@@ -7970,6 +7973,13 @@ A quick Q&A will now begin to understand your objectives to serve you better:"""
     # ``config_fields`` on its handler. These two handlers work for
     # every integration with no per-id branching.
 
+    async def _handle_figma_canvas_control(self, data: dict) -> None:
+        """Settings can pair/stop a canvas; design writes remain agent actions."""
+        from app.ui_layer.settings.figma_canvas import control_canvas
+
+        result = await control_canvas(self._system_for("figma"), data)
+        await self._broadcast({"type": "figma_canvas_result", "data": result})
+
     async def _handle_integration_get_config(
         self, integration_id: str, request_id: Optional[str] = None
     ) -> None:
@@ -8243,31 +8253,18 @@ A quick Q&A will now begin to understand your objectives to serve you better:"""
     # =====================
 
     @staticmethod
-    def _fetch_catalogue(url: str) -> dict:
+    def _fetch_catalogue() -> dict:
         """Blocking fetch + parse of the marketplace catalogue.
 
         Split out so the caller can run it off the event loop — see
         _handle_marketplace_list.
         """
-        import json as _json
-        import re as _re
-        import ssl
-        import urllib.request
+        from app.agent_app import marketplace_source
 
-        import certifi
-
-        ssl_ctx = ssl.create_default_context(cafile=certifi.where())
-        req = urllib.request.Request(url, headers={"User-Agent": "CraftBot"})
-        raw = urllib.request.urlopen(req, timeout=15, context=ssl_ctx).read().decode()
-        # Strip trailing commas before ] or } (tolerant of hand-edited JSON)
-        return _json.loads(_re.sub(r",\s*([}\]])", r"\1", raw))
+        return marketplace_source.fetch_catalogue(timeout=15)
 
     async def _handle_marketplace_list(self) -> None:
         """Fetch marketplace catalogue from GitHub."""
-        from app.agent_app import marketplace_source
-
-        CATALOGUE_URL = marketplace_source.catalogue_url()
-
         try:
             # MUST run off the event loop. urlopen is blocking, and this used
             # to be called inline in an async handler: a slow fetch froze the
@@ -8277,20 +8274,12 @@ A quick Q&A will now begin to understand your objectives to serve you better:"""
             # blackhole hangs indefinitely and the UI spinner never resolves.
             # Every other network call in this module already uses to_thread.
             catalogue = await asyncio.wait_for(
-                asyncio.to_thread(self._fetch_catalogue, CATALOGUE_URL),
+                asyncio.to_thread(self._fetch_catalogue),
                 timeout=30,
             )
-            # Resolve thumbnails here rather than in the frontend, which would
-            # otherwise build them against a hard-coded branch and 404 for any
-            # app that only exists on the ref being tested.
+            # The shared fetcher resolves thumbnails against the repository
+            # and branch that actually supplied the catalogue.
             apps = catalogue.get("apps", [])
-            for app in apps:
-                if (
-                    isinstance(app, dict)
-                    and not app.get("preview")
-                    and app.get("folder")
-                ):
-                    app["preview"] = marketplace_source.thumbnail_url(app["folder"])
             await self._broadcast(
                 {
                     "type": "agent_app_marketplace_list",
