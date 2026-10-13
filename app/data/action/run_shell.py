@@ -156,6 +156,7 @@ def shell_exec(input_data: dict) -> dict:
         from agent_core.core.impl.action.cancellation import (
             register_process,
             unregister_process,
+            was_killed,
         )
 
         run_session_id = input_data.get("_session_id") or ""
@@ -176,6 +177,17 @@ def shell_exec(input_data: dict) -> dict:
 
         try:
             stdout, stderr = process.communicate(timeout=timeout_seconds)
+            if was_killed(process):
+                # A user stop killed it; the exit code says nothing about
+                # the command itself.
+                return {
+                    "status": "error",
+                    "stdout": stdout.strip() if stdout else "",
+                    "stderr": stderr.strip() if stderr else "",
+                    "return_code": -1,
+                    "message": "Stopped by the user before the command finished.",
+                    "pid": None,
+                }
             return {
                 "status": "success" if process.returncode == 0 else "error",
                 "stdout": stdout.strip() if stdout else "",
@@ -218,23 +230,15 @@ def shell_exec(input_data: dict) -> dict:
 
 @action(
     name="run_shell",
-    description=(
-        "Executes Windows shell source, capturing stdout, stderr and exit code. "
-        "Stdin is closed. Set background=true for servers/watchers."
-    ),
+    description="Executes a command line with cmd.exe, capturing stdout, stderr, and exit code. Stdin is closed (EOF) by default. For PowerShell, use run_powershell. IMPORTANT: For long-running commands that don't terminate (e.g., 'npm run dev', 'npm start', 'python -m http.server', 'flask run', watch processes, dev servers), you MUST set background=true. Otherwise, the command will block the entire task until timeout and may not capture any output.",
     platforms=["windows"],
     default=True,
     action_sets=["core"],
     input_schema={
         "command": {
             "type": "string",
-            "example": "Get-CimInstance Win32_LogicalDisk -Filter 'DriveType=3'",
-            "description": "Raw source for the selected shell; the tool starts the interpreter. Omit powershell -Command/cmd /c wrappers unless intentional.",
-        },
-        "shell": {
-            "type": "string",
-            "example": "powershell",
-            "description": "cmd (default/auto), powershell, or pwsh. Use powershell/pwsh for PowerShell source.",
+            "example": "dir C:\\\\Windows\\\\System32",
+            "description": "The cmd.exe command line to execute.",
         },
         "timeout": {
             "type": "integer",
@@ -259,21 +263,6 @@ def shell_exec(input_data: dict) -> dict:
         },
     },
     output_schema={
-        "shell": {
-            "type": "string",
-            "example": "powershell",
-            "description": "Normalized shell selected for this execution.",
-        },
-        "shell_executable": {
-            "type": "string",
-            "example": "powershell.exe",
-            "description": "Resolved interpreter path, or executable name if unavailable. Null when no launch was prepared.",
-        },
-        "guidance": {
-            "type": "string",
-            "example": "",
-            "description": "Advisory for nested PowerShell wrappers. Commands are never rewritten or retried automatically.",
-        },
         "status": {"type": "string", "example": "success"},
         "stdout": {"type": "string", "example": "Command output text"},
         "stderr": {"type": "string", "example": ""},
@@ -287,7 +276,6 @@ def shell_exec(input_data: dict) -> dict:
     },
     test_payload={
         "command": "dir C:\\\\Windows\\\\System32",
-        "shell": "auto",
         "timeout": 600,
         "cwd": "/home/user",
         "env": {"MY_VAR": "123"},
@@ -297,75 +285,22 @@ def shell_exec(input_data: dict) -> dict:
 )
 def shell_exec_windows(input_data: dict) -> dict:
     import os
-    import re
-    import shutil
     import subprocess
-
-    shell_choice = str(input_data.get("shell", "cmd")).strip().lower()
-    if shell_choice in ("", "auto"):
-        shell_choice = "cmd"
-    shell_executable = None
-    command = str(input_data.get("command", "")).strip()
-    # Advisory only: intentional nested shells remain supported. Never rewrite
-    # or re-execute a command that might already have had side effects.
-    nested_shell = re.match(
-        r"^(?:cmd(?:\.exe)?\s+(?:/[dsk]\s+)*/c\s+)?"
-        r"(?:powershell|pwsh)(?:\.exe)?\s+.*?-(?:command|c)\b",
-        command,
-        re.IGNORECASE | re.DOTALL,
-    )
-
-    def result(output):
-        output["shell"] = shell_choice
-        output["shell_executable"] = shell_executable
-        # Preserve native stderr and exit status; stderr text is not a reliable
-        # error-type protocol across shells, applications or localized output.
-        output["guidance"] = (
-            "Nested PowerShell -Command detected: outer shells may expand variables "
-            "or quotes, even with exit code 0. Prefer shell='powershell'/'pwsh' with "
-            "raw script; verify stdout if nesting is intentional."
-            if nested_shell
-            else ""
-        )
-        return output
 
     simulated_mode = input_data.get("simulated_mode", False)
 
     if simulated_mode:
         # Return mock result for testing
-        return result(
-            {
-                "status": "success",
-                "stdout": "Simulated command output",
-                "stderr": "",
-                "return_code": 0,
-                "message": "",
-                "pid": None,
-            }
-        )
+        return {
+            "status": "success",
+            "stdout": "Simulated command output",
+            "stderr": "",
+            "return_code": 0,
+            "message": "",
+            "pid": None,
+        }
 
-    if shell_choice not in ("cmd", "powershell", "pwsh"):
-        # Previously any unsupported value (e.g. "bash", "sh", "zsh") was
-        # silently coerced to cmd, so a bash heredoc would run under cmd and
-        # fail with a cryptic "<< was unexpected at this time." Return an
-        # explicit error instead so the caller knows its shell choice was
-        # rejected and why.
-        return result(
-            {
-                "status": "error",
-                "stdout": "",
-                "stderr": "",
-                "return_code": -1,
-                "message": (
-                    f"Shell '{shell_choice}' is not available on Windows. "
-                    "Supported shells: cmd, powershell, pwsh. "
-                    "bash/zsh/sh syntax (e.g. heredocs) will NOT run here — "
-                    "use PowerShell for scripting, or write files via a file action "
-                    "rather than shell redirection."
-                ),
-                "pid": None,
-            }
-        )
+    command = str(input_data.get("command", "")).strip()
     timeout_val = input_data.get("timeout")
     cwd = input_data.get("cwd")
     env_input = input_data.get("env") or {}
@@ -374,28 +309,24 @@ def shell_exec_windows(input_data: dict) -> dict:
     timeout_seconds = float(timeout_val) if timeout_val is not None else 600.0
 
     if not command:
-        return result(
-            {
-                "status": "error",
-                "stdout": "",
-                "stderr": "",
-                "return_code": -1,
-                "message": "command is required.",
-                "pid": None,
-            }
-        )
+        return {
+            "status": "error",
+            "stdout": "",
+            "stderr": "",
+            "return_code": -1,
+            "message": "command is required.",
+            "pid": None,
+        }
 
     if cwd and not os.path.isdir(cwd):
-        return result(
-            {
-                "status": "error",
-                "stdout": "",
-                "stderr": "",
-                "return_code": -1,
-                "message": "Working directory does not exist.",
-                "pid": None,
-            }
-        )
+        return {
+            "status": "error",
+            "stdout": "",
+            "stderr": "",
+            "return_code": -1,
+            "message": "Working directory does not exist.",
+            "pid": None,
+        }
 
     # Resolved Node runtime leads PATH: the agent is instructed to run the
     # agent-app CLI (TypeScript, needs node >= 24) via bare `node` through this
@@ -406,36 +337,11 @@ def shell_exec_windows(input_data: dict) -> dict:
     for k, v in env_input.items():
         env[str(k)] = str(v)
 
-    shell_executable = (
-        shutil.which(shell_choice + ".exe", path=env.get("PATH"))
-        or shell_choice + ".exe"
-    )
-    if shell_choice == "powershell":
-        args = [
-            shell_executable,
-            "-NoLogo",
-            "-NonInteractive",
-            "-NoProfile",
-            "-ExecutionPolicy",
-            "Bypass",
-            "-Command",
-            command,
-        ]
-    elif shell_choice == "pwsh":
-        args = [
-            shell_executable,
-            "-NoLogo",
-            "-NonInteractive",
-            "-NoProfile",
-            "-Command",
-            command,
-        ]
-    else:
-        # Build the command line as a raw string: passing a list makes Popen
-        # escape embedded quotes as \" (MSVCRT rules), which cmd.exe does not
-        # understand, mangling any command containing a quoted path. With
-        # /s /c, cmd strips the outer quotes and runs the command verbatim.
-        args = '"' + shell_executable + '" /d /s /c "' + command + '"'
+    # Build the command line as a raw string: passing a list makes Popen
+    # escape embedded quotes as \" (MSVCRT rules), which cmd.exe does not
+    # understand, mangling any command containing a quoted path. With
+    # /s /c, cmd strips the outer quotes and runs the command verbatim.
+    args = 'cmd.exe /d /s /c "' + command + '"'
 
     creation_flags = getattr(subprocess, "CREATE_NO_WINDOW", 0)
 
@@ -453,27 +359,23 @@ def shell_exec_windows(input_data: dict) -> dict:
                 env=env,
                 creationflags=bg_flags,
             )
-            return result(
-                {
-                    "status": "background",
-                    "stdout": "",
-                    "stderr": "",
-                    "return_code": 0,
-                    "message": f"Process started in background with PID {process.pid}",
-                    "pid": process.pid,
-                }
-            )
+            return {
+                "status": "background",
+                "stdout": "",
+                "stderr": "",
+                "return_code": 0,
+                "message": f"Process started in background with PID {process.pid}",
+                "pid": process.pid,
+            }
         except Exception as e:
-            return result(
-                {
-                    "status": "error",
-                    "stdout": "",
-                    "stderr": str(e),
-                    "return_code": -1,
-                    "message": str(e),
-                    "pid": None,
-                }
-            )
+            return {
+                "status": "error",
+                "stdout": "",
+                "stderr": str(e),
+                "return_code": -1,
+                "message": str(e),
+                "pid": None,
+            }
 
     # Foreground mode with proper timeout handling
     try:
@@ -482,6 +384,7 @@ def shell_exec_windows(input_data: dict) -> dict:
         from agent_core.core.impl.action.cancellation import (
             register_process,
             unregister_process,
+            was_killed,
         )
 
         run_session_id = input_data.get("_session_id") or ""
@@ -503,16 +406,25 @@ def shell_exec_windows(input_data: dict) -> dict:
 
         try:
             stdout, stderr = process.communicate(timeout=timeout_seconds)
-            return result(
-                {
-                    "status": "success" if process.returncode == 0 else "error",
+            if was_killed(process):
+                # A user stop killed it; the exit code says nothing about
+                # the command itself.
+                return {
+                    "status": "error",
                     "stdout": stdout.strip() if stdout else "",
                     "stderr": stderr.strip() if stderr else "",
-                    "return_code": process.returncode,
-                    "message": "",
+                    "return_code": -1,
+                    "message": "Stopped by the user before the command finished.",
                     "pid": None,
                 }
-            )
+            return {
+                "status": "success" if process.returncode == 0 else "error",
+                "stdout": stdout.strip() if stdout else "",
+                "stderr": stderr.strip() if stderr else "",
+                "return_code": process.returncode,
+                "message": "",
+                "pid": None,
+            }
         except subprocess.TimeoutExpired:
             # Kill the entire process tree on Windows using taskkill
             try:
@@ -525,29 +437,25 @@ def shell_exec_windows(input_data: dict) -> dict:
                 pass
             process.kill()
             stdout, stderr = process.communicate()
-            return result(
-                {
-                    "status": "error",
-                    "stdout": (stdout or "").strip(),
-                    "stderr": (stderr or "").strip(),
-                    "return_code": -1,
-                    "message": f"Timed out after {timeout_seconds}s.",
-                    "pid": None,
-                }
-            )
+            return {
+                "status": "error",
+                "stdout": (stdout or "").strip(),
+                "stderr": (stderr or "").strip(),
+                "return_code": -1,
+                "message": f"Timed out after {timeout_seconds}s.",
+                "pid": None,
+            }
         finally:
             unregister_process(run_session_id, process)
     except Exception as e:
-        return result(
-            {
-                "status": "error",
-                "stdout": "",
-                "stderr": str(e),
-                "return_code": -1,
-                "message": str(e),
-                "pid": None,
-            }
-        )
+        return {
+            "status": "error",
+            "stdout": "",
+            "stderr": str(e),
+            "return_code": -1,
+            "message": str(e),
+            "pid": None,
+        }
 
 
 @action(
@@ -711,6 +619,7 @@ def shell_exec_darwin(input_data: dict) -> dict:
         from agent_core.core.impl.action.cancellation import (
             register_process,
             unregister_process,
+            was_killed,
         )
 
         run_session_id = input_data.get("_session_id") or ""
@@ -730,6 +639,17 @@ def shell_exec_darwin(input_data: dict) -> dict:
 
         try:
             stdout, stderr = process.communicate(timeout=timeout_seconds)
+            if was_killed(process):
+                # A user stop killed it; the exit code says nothing about
+                # the command itself.
+                return {
+                    "status": "error",
+                    "stdout": stdout.strip() if stdout else "",
+                    "stderr": stderr.strip() if stderr else "",
+                    "return_code": -1,
+                    "message": "Stopped by the user before the command finished.",
+                    "pid": None,
+                }
             return {
                 "status": "success" if process.returncode == 0 else "error",
                 "stdout": stdout.strip() if stdout else "",
