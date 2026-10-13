@@ -126,6 +126,13 @@ class TelegramBotProvider:
     config_class = TelegramBotConfig
     config_fields = [
         {
+            "key": "auto_reply_contact_ids",
+            "label": "Auto-reply contact IDs",
+            "type": "list",
+            "placeholder": "123456789, 987654321",
+            "help": "Allow automatic conversational replies in private chats with these Telegram user IDs. Applies to all connected bot accounts. Use numeric IDs from incoming messages, not names or @usernames. Remove an ID to disable replies. This does not grant owner permissions.",
+        },
+        {
             "key": "self_messages_only",
             "label": "Private DMs only",
             "type": "checkbox",

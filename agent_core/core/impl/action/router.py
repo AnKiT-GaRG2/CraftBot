@@ -799,6 +799,17 @@ class ActionRouter:
         # Cap at 10 actions
         actions = actions[:10]
 
+        # A standalone end_turn is non-parallelizable and otherwise wins
+        # over the reply, discarding it. Telegram auto-replies end the run
+        # on successful delivery themselves. Never let a redundant stop
+        # suppress the send (including when the LLM puts end_turn first).
+        if any(
+            a.get("action_name")
+            in ("send_telegram_bot_message", "send_telegram_text_message")
+            for a in actions
+        ):
+            actions = [a for a in actions if a.get("action_name") != "end_turn"]
+
         dropped_actions = []
 
         # Check for non-parallelizable actions by looking up each action's parallelizable attribute

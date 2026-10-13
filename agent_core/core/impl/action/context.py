@@ -25,6 +25,13 @@ current_input_data: ContextVar[Optional[Dict[str, Any]]] = ContextVar(
     "current_input_data", default=None
 )
 
+# Trusted turn origin, set by the host around action execution and inherited
+# by asyncio tasks and copied thread contexts. Kept separate from action
+# inputs so a sender/LLM cannot claim owner status in tool parameters.
+current_message_origin: ContextVar[Optional[Dict[str, Any]]] = ContextVar(
+    "current_message_origin", default=None
+)
+
 
 def run_with_input_context(
     function_to_call: Callable[[dict], dict], input_data: dict

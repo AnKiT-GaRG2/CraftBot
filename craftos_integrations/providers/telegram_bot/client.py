@@ -4,7 +4,7 @@
 from __future__ import annotations
 
 import asyncio
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from typing import Any, Dict, List, Optional, Union
 
@@ -88,6 +88,37 @@ class TelegramBotConfig:
     # supergroups, and channels). Closest analog to "self-only" for a bot,
     # which has no self-chat concept of its own.
     self_messages_only: bool = False
+    # Reply permission only: these contacts never become bot owners. Like
+    # the incoming-chat filter, this preference applies to all bot accounts.
+    auto_reply_contact_ids: List[str] = field(default_factory=list)
+
+    def configuration_error(self) -> Optional[str]:
+        if not isinstance(self.auto_reply_contact_ids, list) or any(
+            not isinstance(cid, str)
+            or not cid.isascii()
+            or not cid.isdecimal()
+            or len(cid) > 20
+            or cid.startswith("0")
+            for cid in self.auto_reply_contact_ids
+        ):
+            return "Auto-reply contacts must be positive numeric Telegram user IDs, not names or @usernames."
+        return None
+
+    def allows_auto_reply(
+        self, contact_id: str, channel_id: str, chat_type: str
+    ) -> bool:
+        """Authorize only a selected contact's private chat, by stable ID."""
+        return (
+            chat_type == "private"
+            and isinstance(contact_id, str)
+            and contact_id.isascii()
+            and contact_id.isdecimal()
+            and len(contact_id) <= 20
+            and int(contact_id) > 0
+            and channel_id == contact_id
+            and isinstance(self.auto_reply_contact_ids, list)
+            and contact_id in self.auto_reply_contact_ids
+        )
 
 
 TELEGRAM_BOT = IntegrationSpec(
@@ -312,7 +343,10 @@ class TelegramBotClient(BasePlatformClient):
         return out
 
     async def _process_update(self, update: Dict[str, Any]) -> None:
-        self._poll_offset = update.get("update_id", 0) + 1
+        update_id = update.get("update_id", 0)
+        if update_id < self._poll_offset:
+            return  # A repeated/stale update must not queue a second reply.
+        self._poll_offset = update_id + 1
         message = update.get("message")
         if not message:
             return
