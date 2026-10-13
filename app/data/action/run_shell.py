@@ -287,6 +287,23 @@ def shell_exec_windows(input_data: dict) -> dict:
     import os
     import subprocess
 
+    # Older callers may still send the removed shell parameter. Refuse a
+    # different interpreter instead of executing its source under cmd.exe.
+    shell_choice = str(input_data.get("shell", "cmd")).strip().lower()
+    if shell_choice not in ("cmd", "auto", ""):
+        return {
+            "status": "error",
+            "stdout": "",
+            "stderr": "",
+            "return_code": -1,
+            "message": (
+                f"Windows run_shell only supports cmd.exe; requested shell '{shell_choice}'. "
+                "Use run_powershell with the script parameter for Windows PowerShell, "
+                "or explicitly launch the desired executable from a cmd command line."
+            ),
+            "pid": None,
+        }
+
     simulated_mode = input_data.get("simulated_mode", False)
 
     if simulated_mode:

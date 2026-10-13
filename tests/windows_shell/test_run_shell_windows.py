@@ -94,6 +94,33 @@ class ShellSchemaTests(unittest.TestCase):
                 self.assertEqual(result["status"], "error")
                 self.assertEqual(result["message"], message)
 
+    def test_non_cmd_shell_is_rejected_before_launch(self):
+        app = types.ModuleType("app")
+        child_env = Mock(return_value=os.environ.copy())
+        app.node_runtime = types.SimpleNamespace(child_env=child_env)
+        shells = ("powershell", "pwsh", "bash", "sh", "zsh", " PowerShell ", None)
+        for shell in shells:
+            for mode in ({}, {"background": True}, {"simulated_mode": True}):
+                with (
+                    self.subTest(shell=shell, mode=mode),
+                    patch.dict(sys.modules, {"app": app}),
+                    patch("subprocess.Popen") as spawn,
+                    patch("subprocess.run") as run,
+                ):
+                    result = self.run_shell(
+                        {"command": "echo should-not-run", "shell": shell, **mode}
+                    )
+                    self.assertEqual(result["status"], "error", result)
+                    self.assertEqual(result["return_code"], -1, result)
+                    self.assertEqual(result["stdout"], "")
+                    self.assertEqual(result["stderr"], "")
+                    self.assertIsNone(result["pid"])
+                    self.assertIn("cmd.exe", result["message"])
+                    self.assertIn("run_powershell", result["message"])
+                    spawn.assert_not_called()
+                    run.assert_not_called()
+                    child_env.assert_not_called()
+
 
 @unittest.skipUnless(sys.platform == "win32", "Requires real Windows interpreters")
 class WindowsShellTests(unittest.TestCase):
@@ -241,6 +268,32 @@ class WindowsShellTests(unittest.TestCase):
             self.cmd("echo %CRAFTBOT_SHELL_TEST%", env={"CRAFTBOT_SHELL_TEST": "set"}),
             "set",
         )
+
+    def test_legacy_cmd_selections_still_run(self):
+        for shell in ("cmd", " CMD ", "auto", " AUTO ", "", "   "):
+            with self.subTest(shell=shell):
+                self.assert_output(
+                    self.cmd("echo cmd-compatible", shell=shell), "cmd-compatible"
+                )
+
+    def test_legacy_powershell_selection_cannot_expand_cmd_variables(self):
+        result = self.cmd(
+            "echo %CRAFTBOT_SHELL_TEST%",
+            shell="powershell",
+            env={"CRAFTBOT_SHELL_TEST": "expanded-by-cmd"},
+        )
+        self.assertEqual(result["status"], "error", result)
+        self.assertEqual(result["stdout"], "")
+        self.assertIn("run_powershell", result["message"])
+
+    def test_rejected_shell_has_no_filesystem_side_effect(self):
+        with tempfile.TemporaryDirectory() as directory:
+            marker = Path(directory) / "should-not-exist.txt"
+            for shell in ("powershell", "pwsh", "bash"):
+                with self.subTest(shell=shell):
+                    result = self.cmd(f'echo executed>"{marker}"', shell=shell)
+                    self.assertEqual(result["status"], "error", result)
+                    self.assertFalse(marker.exists())
 
     def test_cmd_quoted_executable_path(self):
         result = self.cmd(f'"{sys.executable}" -c "print(123)"')
