@@ -5,7 +5,8 @@
 - ``BrowserHarness``: one headless Chromium per test module, running on its
   own event-loop thread (like the real Mini Browser host); tests submit
   coroutines with ``harness.run(...)``. ``launch_browser_or_skip`` skips the
-  module cleanly when Playwright or Chromium is not installed.
+  module cleanly when Playwright or Chromium is not installed (and fails on
+  any other startup error, or when CRAFTBOT_REQUIRE_BROWSER_TESTS=1).
 - ``LocalServer``: a tiny threaded HTTP server serving test pages, for real
   navigations (two origins: 127.0.0.1 and localhost).
 """
@@ -13,6 +14,7 @@
 from __future__ import annotations
 
 import asyncio
+import os
 import threading
 import time
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
@@ -179,14 +181,59 @@ class BrowserHarness:
         self.thread.join(timeout=10)
 
 
+# Set (e.g. in a CI job that installs Chromium) to make a missing browser a
+# failure instead of a skip.
+REQUIRE_BROWSER_ENV = "CRAFTBOT_REQUIRE_BROWSER_TESTS"
+BROWSER_MISSING_CODES = (
+    "MINI_BROWSER_CHROMIUM_MISSING",
+    "MINI_BROWSER_PLAYWRIGHT_MISSING",
+)
+
+
+def browser_required() -> bool:
+    return os.environ.get(REQUIRE_BROWSER_ENV, "").strip().lower() in (
+        "1",
+        "true",
+        "yes",
+    )
+
+
+def is_browser_missing(exc: BaseException) -> bool:
+    """Playwright's "browser is not installed" error (or our code for it)."""
+    if getattr(exc, "code", None) in BROWSER_MISSING_CODES:
+        return True
+    text = str(exc)
+    return "Executable doesn't exist" in text or "is not found at" in text
+
+
+def skip_browser_missing(reason: str) -> None:
+    """Skip: the browser is not installed (a failure when it is required)."""
+    if browser_required():
+        pytest.fail(f"{reason} ({REQUIRE_BROWSER_ENV} is set)")
+    pytest.skip(reason)
+
+
+def import_playwright_or_skip() -> None:
+    try:
+        import playwright.async_api  # noqa: F401
+    except ImportError:
+        skip_browser_missing("Playwright is not installed")
+
+
 def launch_browser_or_skip() -> BrowserHarness:
-    pytest.importorskip("playwright.async_api")
+    """A started headless Chromium. Skips only when Playwright or Chromium is
+    not installed; any other startup failure fails the tests."""
+    import_playwright_or_skip()
     harness = BrowserHarness()
     try:
         harness.run(harness.start(), timeout=120)
-    except Exception as exc:  # Chromium not installed, sandbox issues, ...
+    except Exception as exc:
         harness.close()
-        pytest.skip(f"Chromium is not available: {str(exc).splitlines()[0][:200]}")
+        if not is_browser_missing(exc):
+            raise
+        skip_browser_missing(
+            f"Chromium is not installed: {str(exc).splitlines()[0][:200]}"
+        )
     return harness
 
 

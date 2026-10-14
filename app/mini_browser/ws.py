@@ -1413,11 +1413,17 @@ class MiniBrowserWS:
 
     async def _handle_copy(self, ws: Any, data: Dict[str, Any]) -> None:
         tab_id = _short_id(data.get("tabId"), "tabId", required=True)
+        # Echoed back, so the page matches the reply to its request (a cut
+        # deletes the selection only once ITS copy has arrived).
+        request_id = _short_id(data.get("requestId"), "requestId", required=False)
         host = self._running_host()
         # The selection may come from input still on its way (a drag, Ctrl+A).
         await self._settle_input(ws, tab_id, drop_late=False)
         text = await host.call(lambda core: _copy_selection(core, tab_id))
-        self._send(ws, "mini_browser_clipboard", {"text": text})
+        reply: Dict[str, Any] = {"text": text}
+        if request_id is not None:
+            reply["requestId"] = request_id
+        self._send(ws, "mini_browser_clipboard", reply)
 
     # ── handlers: password vault (replies to the requester only) ────────────
 

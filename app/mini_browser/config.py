@@ -3,7 +3,8 @@
 Settings come from settings.json ``mini_browser`` through
 ``app.config.get_mini_browser_settings()`` and are validated again here into a
 frozen :class:`MiniBrowserSettings`, so a hand-edited value can never stop the
-browser from starting.
+browser from starting. Both use the same rules (:func:`clean_setting`), so a
+value means the same whichever way it is read.
 
 The path helpers never touch the disk. Create a directory with
 :func:`ensure_dir` from a worker thread (``asyncio.to_thread``): this module
@@ -93,30 +94,58 @@ class MiniBrowserSettings:
         return asdict(self)
 
 
-def _clean(name: str, value: Any, default: Any) -> Any:
-    """``value`` made valid for setting ``name``, or ``default``."""
-    if isinstance(default, bool):
-        return _as_bool(value, default)
+_DEFAULTS: Dict[str, Any] = MiniBrowserSettings().to_dict()
+
+
+def clean_setting(name: str, value: Any) -> Tuple[bool, Any]:
+    """``(True, cleaned)`` for a usable value of setting ``name``, else
+    ``(False, None)``.
+
+    The one set of rules for every way the settings are read or written
+    (``app.config`` uses it too):
+
+    - on/off settings: a boolean, 0 / 1, or the words true / false, yes / no,
+      on / off, 1 / 0 (any case);
+    - numbers: a finite number or a numeric string, rounded and clamped to
+      its range (``_RANGES``);
+    - ``search_url``: http(s) with exactly one ``{query}`` slot;
+    - ``locale``: a language tag such as ``ja-JP`` (``_`` becomes ``-``), or
+      "" for the OS locale;
+    - ``channel``: one of ``CHANNELS`` (any case).
+
+    Unknown settings and anything else are unusable.
+    """
+    if name not in _DEFAULTS:
+        return False, None
+    if isinstance(_DEFAULTS[name], bool):
+        flag = _as_bool(value)
+        return (flag is not None), flag
     if name in _RANGES:
-        low, high = _RANGES[name]
-        return _as_int(value, default, low, high)
+        number = _as_int(value, *_RANGES[name])
+        return (number is not None), number
     if not isinstance(value, str):
-        return default
+        return False, None
     text = value.strip()
     if name == "search_url":
-        return text if _usable_search_url(text) else default
+        return (True, text) if _usable_search_url(text) else (False, None)
     if name == "locale":
         text = text.replace("_", "-")
-        if not text:
-            return ""
-        return text if len(text) <= 35 and _LOCALE_RE.fullmatch(text) else default
+        if text and (len(text) > 35 or not _LOCALE_RE.fullmatch(text)):
+            return False, None
+        return True, text
     if name == "channel":
         text = text.lower()
-        return text if text in CHANNELS else default
-    return default
+        return (True, text) if text in CHANNELS else (False, None)
+    return False, None
 
 
-def _as_bool(value: Any, default: bool) -> bool:
+def _clean(name: str, value: Any, default: Any) -> Any:
+    """``value`` made valid for setting ``name``, or ``default``."""
+    ok, cleaned = clean_setting(name, value)
+    return cleaned if ok else default
+
+
+def _as_bool(value: Any) -> Optional[bool]:
     if isinstance(value, bool):
         return value
     if isinstance(value, int) and value in (0, 1):
@@ -127,21 +156,21 @@ def _as_bool(value: Any, default: bool) -> bool:
             return True
         if word in _FALSE_WORDS:
             return False
-    return default
+    return None
 
 
-def _as_int(value: Any, default: int, low: int, high: int) -> int:
+def _as_int(value: Any, low: int, high: int) -> Optional[int]:
     if isinstance(value, bool):
-        return default
+        return None
     if isinstance(value, str):
         try:
             value = float(value.strip())
         except ValueError:
-            return default
+            return None
     if not isinstance(value, (int, float)):
-        return default
+        return None
     if isinstance(value, float) and not math.isfinite(value):
-        return default
+        return None
     return max(low, min(high, int(round(value))))
 
 

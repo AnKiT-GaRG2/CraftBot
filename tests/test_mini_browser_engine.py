@@ -32,6 +32,7 @@ from app.mini_browser.config import MiniBrowserSettings
 from app.mini_browser.core import BrowserCore
 from app.mini_browser.errors import MiniBrowserError
 from app.mini_browser.host import MiniBrowserHost
+from tests.mini_browser_fixtures import import_playwright_or_skip, skip_browser_missing
 
 ORIGINAL_WORKSPACE_DIR = config.workspace_dir
 SECRET = "Sup3r-Secret-Passw0rd"
@@ -589,7 +590,7 @@ def site():
 
 @pytest.fixture(scope="module")
 def engine(site, tmp_path_factory):
-    pytest.importorskip("playwright.async_api")
+    import_playwright_or_skip()
     patch = pytest.MonkeyPatch()
     root = tmp_path_factory.mktemp("mini_browser_engine")
     saved: list = []
@@ -622,7 +623,7 @@ def engine(site, tmp_path_factory):
             "MINI_BROWSER_CHROMIUM_MISSING",
             "MINI_BROWSER_PLAYWRIGHT_MISSING",
         ):
-            pytest.skip(f"Chromium unavailable ({exc.code})")
+            skip_browser_missing(f"Chromium unavailable ({exc.code})")
         raise
     yield engine
     asyncio.run(host.shutdown(timeout=20))

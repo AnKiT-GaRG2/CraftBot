@@ -42,6 +42,7 @@ from app.mini_browser.observe import is_context_destroyed
 from app.mini_browser.types import EVENT_NOTICE
 
 FILL_TIMEOUT_MS = 3000
+FIELD_POLL_S = 0.1
 PROBE_TIMEOUT_S = 10.0
 STEP_WAIT_S = 10.0  # two-step: how long to wait for the password field
 PROBE_POLL_S = 0.3
@@ -81,6 +82,17 @@ MSG_NO_PASSWORD = "The saved login has no password."
 MSG_VAULT_UNAVAILABLE = (
     "The password vault is not available right now. Try again in a moment."
 )
+
+# Called on a tagged field: does it take input right now (attached, shown,
+# enabled, writable)?
+FIELD_READY_JS = r"""
+(el) => {
+  if (!el.isConnected || el.disabled || el.readOnly) return false;
+  const r = el.getBoundingClientRect();
+  if (r.width < 1 || r.height < 1) return false;
+  return !el.checkVisibility || el.checkVisibility({visibilityProperty: true});
+}
+"""
 
 # Finds the sign-in fields in one frame and tags them
 # data-mb-login="<nonce>-pw|user|submit". Returns what it found.
@@ -562,6 +574,26 @@ async def _point_at(core: Any, tab: Any, locator: Any) -> None:
         pass
 
 
+async def _wait_ready(tab: Any, locator: Any) -> bool:
+    """Wait (at most FILL_TIMEOUT_MS) until the field takes input.
+
+    Only reads the page, and stops (MINI_BROWSER_USER_IN_CONTROL) once the
+    user takes control.
+    """
+    loop = asyncio.get_running_loop()
+    deadline = loop.time() + FILL_TIMEOUT_MS / 1000.0
+    while True:
+        human.ensure_control(tab)
+        try:
+            if await locator.evaluate(FIELD_READY_JS, timeout=1000):
+                return True
+        except Exception as exc:
+            logger.debug(f"[MiniBrowser] login: field check ({type(exc).__name__})")
+        if loop.time() >= deadline:
+            return False
+        await asyncio.sleep(FIELD_POLL_S)
+
+
 async def _fill(
     core: Any,
     tab: Any,
@@ -589,11 +621,25 @@ async def _fill(
     try:
         if await asyncio.wait_for(locator.count(), 3.0) != 1:
             failure = "field gone"
+        elif not await _wait_ready(tab, locator):
+            failure = "field not ready"
         else:
-            await locator.fill(
-                value.reveal() if isinstance(value, _Hidden) else value,
-                timeout=FILL_TIMEOUT_MS,
-            )
+            handle = await locator.element_handle(timeout=FILL_TIMEOUT_MS)
+            try:
+                human.ensure_control(tab)
+                _check_origin(page, frame, origin)
+                # force: the field was just found ready. Without it the fill
+                # would wait inside the browser driver whenever the field is
+                # not, and could land after the user took control.
+                await handle.fill(
+                    value.reveal() if isinstance(value, _Hidden) else value,
+                    force=True,
+                    timeout=FILL_TIMEOUT_MS,
+                )
+            finally:
+                await ops.dispose_handle(handle)
+    except MiniBrowserError:
+        raise  # the user took control, or the page left the site
     except Exception as exc:
         failure = type(exc).__name__
     if failure:
@@ -632,7 +678,18 @@ async def _submit(
     with ops.NavWatch(page) as watch:
         pressed = True
         try:
-            await field.press("Enter", timeout=FILL_TIMEOUT_MS)
+            # On the element handle: a Locator press would wait inside the
+            # browser driver for the field and could submit after the user
+            # took control.
+            handle = await field.element_handle(timeout=FILL_TIMEOUT_MS)
+            try:
+                human.ensure_control(tab)
+                _check_origin(page, frame, origin)
+                await handle.press("Enter", timeout=FILL_TIMEOUT_MS)
+            finally:
+                await ops.dispose_handle(handle)
+        except MiniBrowserError:
+            raise
         except Exception as exc:
             logger.debug(f"[MiniBrowser] login: Enter failed ({type(exc).__name__})")
             pressed = False

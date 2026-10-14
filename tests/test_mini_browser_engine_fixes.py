@@ -19,6 +19,7 @@ import sys
 import threading
 import time
 import types
+from dataclasses import replace
 from datetime import datetime, timedelta
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
@@ -35,6 +36,11 @@ from app.mini_browser.config import MiniBrowserSettings
 from app.mini_browser.core import BrowserCore
 from app.mini_browser.errors import MiniBrowserError
 from app.mini_browser.host import MiniBrowserHost
+from tests.mini_browser_fixtures import (
+    BROWSER_MISSING_CODES,
+    import_playwright_or_skip,
+    skip_browser_missing,
+)
 
 SECRET = "a*b~c d!é€Zq9"  # '*', '~', space, non-ASCII: every encoding differs
 SLOW_S = 8.0
@@ -675,8 +681,8 @@ class Engine:
 
 
 def _chromium_or_skip(exc: MiniBrowserError) -> None:
-    if exc.code in ("MINI_BROWSER_CHROMIUM_MISSING", "MINI_BROWSER_PLAYWRIGHT_MISSING"):
-        pytest.skip(f"Chromium unavailable ({exc.code})")
+    if exc.code in BROWSER_MISSING_CODES:
+        skip_browser_missing(f"Chromium unavailable ({exc.code})")
 
 
 @pytest.fixture(scope="module")
@@ -688,7 +694,7 @@ def site():
 
 @pytest.fixture(scope="module")
 def engine(site, tmp_path_factory):
-    pytest.importorskip("playwright.async_api")
+    import_playwright_or_skip()
     patch = pytest.MonkeyPatch()
     root = tmp_path_factory.mktemp("mini_browser_fixes")
     patch.setattr(config, "profile_dir", lambda: root / "profile")
@@ -788,7 +794,7 @@ def test_close_during_start_gives_closed_not_cancelled(tmp_path, monkeypatch):
     """concurrency CONC-1: an op waiting for Chromium to start, then the user
     closes the browser: the op returns MINI_BROWSER_CLOSED (never a
     CancelledError its caller did not ask for)."""
-    pytest.importorskip("playwright.async_api")
+    import_playwright_or_skip()
     monkeypatch.setattr(config, "profile_dir", lambda: tmp_path / "profile")
     monkeypatch.setattr(config, "workspace_dir", lambda owner: tmp_path / "ws")
     host = MiniBrowserHost(
@@ -1041,7 +1047,7 @@ def test_a_hook_during_host_start_is_not_lost(monkeypatch):
 def test_close_during_launch_is_clean_and_quick(tmp_path, monkeypatch, delay):
     """concurrency CONC-2: no half-cancelled launch, no leftover Chromium on
     the profile, the profile lock is free and an immediate relaunch works."""
-    pytest.importorskip("playwright.async_api")
+    import_playwright_or_skip()
     profile = tmp_path / "profile"
     monkeypatch.setattr(config, "profile_dir", lambda: profile)
     host = MiniBrowserHost(
@@ -1069,7 +1075,7 @@ def test_close_during_launch_is_clean_and_quick(tmp_path, monkeypatch, delay):
             "MINI_BROWSER_CHROMIUM_MISSING",
             "MINI_BROWSER_PLAYWRIGHT_MISSING",
         ):
-            pytest.skip(outcome)
+            skip_browser_missing(outcome)
         status = run(host.call(lambda c: _apply(lambda core: core.status, c)))
         gone = _wait_for(lambda: not _profile_processes(profile), 10)
         lock_free = _wait_for(lambda: _lock_free(profile), 5)
@@ -1088,7 +1094,7 @@ def test_close_during_launch_is_clean_and_quick(tmp_path, monkeypatch, delay):
 
 
 def test_app_exit_during_launch_is_quick_and_leaves_nothing(tmp_path, monkeypatch):
-    pytest.importorskip("playwright.async_api")
+    import_playwright_or_skip()
     profile = tmp_path / "profile"
     monkeypatch.setattr(config, "profile_dir", lambda: profile)
     host = MiniBrowserHost(
@@ -1114,7 +1120,7 @@ def test_app_exit_during_launch_is_quick_and_leaves_nothing(tmp_path, monkeypatc
 
     took, outcome = run(scenario(), 60)
     if outcome in ("MINI_BROWSER_CHROMIUM_MISSING", "MINI_BROWSER_PLAYWRIGHT_MISSING"):
-        pytest.skip(outcome)
+        skip_browser_missing(outcome)
     assert outcome in ("MINI_BROWSER_CLOSED", "MINI_BROWSER_NOT_RUNNING", "started")
     assert took < 7, took
     assert _wait_for(lambda: not _profile_processes(profile), 10)
@@ -1151,7 +1157,7 @@ def test_an_unclean_close_keeps_the_profile_lock_until_chromium_exits(
 
 def test_driver_death_is_noticed_and_the_relaunch_is_quick(tmp_path, monkeypatch):
     psutil = pytest.importorskip("psutil")
-    pytest.importorskip("playwright.async_api")
+    import_playwright_or_skip()
     profile = tmp_path / "profile"
     monkeypatch.setattr(config, "profile_dir", lambda: profile)
     host = MiniBrowserHost(
@@ -1169,7 +1175,7 @@ def test_driver_death_is_noticed_and_the_relaunch_is_quick(tmp_path, monkeypatch
             "MINI_BROWSER_CHROMIUM_MISSING",
             "MINI_BROWSER_PLAYWRIGHT_MISSING",
         ):
-            pytest.skip(first["error_code"])
+            skip_browser_missing(first["error_code"])
         assert first["status"] == "success"
         drivers = set()
         for proc in _profile_processes(profile):
@@ -1199,7 +1205,7 @@ def test_driver_death_is_noticed_and_the_relaunch_is_quick(tmp_path, monkeypatch
 
 
 def test_settings_apply_at_the_next_start_and_live(tmp_path, monkeypatch):
-    pytest.importorskip("playwright.async_api")
+    import_playwright_or_skip()
     monkeypatch.setattr(config, "profile_dir", lambda: tmp_path / "profile")
     values: Dict[str, Any] = {
         "idle_shutdown_minutes": 0,
@@ -1567,3 +1573,98 @@ def test_owners_are_told_once_even_while_the_browser_is_stopped(eng):
     again = eng.op("told-owner", "echo", timeout=120)  # relaunches
     assert again["status"] == "success"
     assert not again["message"].startswith("Note:")
+
+
+# ── PR review: tabs the user controls, tab limits, download names ───────────
+
+
+def test_an_agent_cannot_close_a_tab_the_user_controls(eng):
+    url = eng.site.url("/page?t=Captcha")
+    tab_id = eng.op("captcha-agent", "goto", url=url)["tab"]["id"]
+    eng.call(lambda core: core.ui_control(tab_id, True))
+    refused = eng.op("captcha-agent", "tabs", action="close", tab=tab_id)
+    assert refused["error_code"] == "MINI_BROWSER_USER_IN_CONTROL", refused
+    assert eng.tab(tab_id) is not None  # the user's work in it is still there
+    eng.call(lambda core: core.ui_control(tab_id, False))
+    closed = eng.op("captcha-agent", "tabs", action="close", tab=tab_id)
+    assert closed["status"] == "success", closed
+    eng.wait_until(lambda core: tab_id not in core.tabs, what="tab closed")
+
+
+def _outcomes(results):
+    return sorted(r.get("error_code") or r["status"] for r in results)
+
+
+def test_concurrent_opens_never_exceed_the_per_owner_limit(eng):
+    async def scenario(core):
+        saved = core.settings
+        core.settings = replace(saved, max_agent_tabs=1)
+        try:
+            results = await asyncio.gather(
+                *(
+                    core.agent_op("cap-owner", "tabs", {"action": "new"})
+                    for _ in range(4)
+                )
+            )
+        finally:
+            core.settings = saved
+        return results, core._owner_tab_count("cap-owner")
+
+    results, count = eng.call(scenario)
+    assert _outcomes(results) == sorted(
+        ["success"] + ["MINI_BROWSER_TOO_MANY_TABS"] * 3
+    )
+    assert count == 1
+
+
+def test_concurrent_opens_never_exceed_the_browser_wide_limit(eng, monkeypatch):
+    before = eng.inspect(lambda core: len(core.tabs))
+    monkeypatch.setattr(core_module, "MAX_TOTAL_TABS", before + 1)
+
+    async def scenario(core):
+        results = await asyncio.gather(
+            core.agent_op("wide-a", "tabs", {"action": "new"}),
+            core.agent_op("wide-b", "tabs", {"action": "new"}),
+        )
+        return results, len(core.tabs), dict(core._opening)
+
+    results, total, opening = eng.call(scenario)
+    assert _outcomes(results) == sorted(["success", "MINI_BROWSER_TOO_MANY_TABS"])
+    assert total == before + 1
+    assert opening == {}  # every reservation was released
+
+
+def test_a_download_name_never_carries_a_saved_password(eng):
+    secret = "Zq9Secr3tPw77"
+    logged: List[str] = []
+    sink_id = core_module.logger.add(lambda message: logged.append(str(message)))
+    try:
+        result = eng.op("dl-secret", "goto", url=eng.site.url("/page?t=Report"))
+        tab_id = result["tab"]["id"]
+        eng.inspect(lambda core: core.tabs[tab_id].filled_secrets.append(secret))
+        clicked = eng.op(
+            "dl-secret",
+            "eval",
+            script=(
+                "(() => { const a = document.createElement('a');"
+                " a.href = URL.createObjectURL(new Blob(['quarterly numbers']));"
+                f" a.download = 'report-{secret}.txt';"
+                " document.body.appendChild(a); a.click(); return true; })()"
+            ),
+        )
+        folder = eng.root / "workspace" / "dl-secret" / "downloads"
+        assert _wait_for(lambda: any(folder.glob("report-*.txt")), 15)
+        eng.wait_until(
+            lambda core: any(e["kind"] == "download" for e in eng.sink.of("event")),
+            what="download event",
+        )
+        later = eng.op("dl-secret", "echo")
+    finally:
+        core_module.logger.remove(sink_id)
+    names = sorted(p.name for p in folder.glob("report-*"))
+    assert names == ["report-[redacted].txt"], names
+    assert (folder / "report-[redacted].txt").read_text() == "quarterly numbers"
+    assert not any(secret in line for line in logged)
+    assert any("Download saved: report-[redacted].txt" in line for line in logged)
+    for blob in (eng.sink.of("event"), clicked, later):
+        assert secret not in json.dumps(blob, ensure_ascii=False)

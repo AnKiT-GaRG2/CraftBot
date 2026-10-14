@@ -90,8 +90,9 @@ interface MiniBrowserSliceState {
   eventSeq: number
   /** The most recent events (oldest first), capped at MAX_EVENTS. */
   events: MiniBrowserEventEntry[]
-  /** Reply to the last copy request; cleared once written to the clipboard. */
-  clipboard: { seq: number; text: string } | null
+  /** Reply to the last copy request; cleared once written to the clipboard.
+   *  `requestId` names the request it answers (null from an older backend). */
+  clipboard: { seq: number; text: string; requestId: string | null } | null
   vault: MiniBrowserVaultState
 }
 
@@ -196,8 +197,12 @@ const miniBrowserSlice = createSlice({
     navResultDismissed(state) {
       state.navResult = null
     },
-    clipboardReceived(state, action: PayloadAction<string>) {
-      state.clipboard = { seq: (state.clipboard?.seq ?? 0) + 1, text: action.payload }
+    clipboardReceived(state, action: PayloadAction<{ text: string; requestId: string | null }>) {
+      state.clipboard = {
+        seq: (state.clipboard?.seq ?? 0) + 1,
+        text: action.payload.text,
+        requestId: action.payload.requestId,
+      }
     },
     /** The copied text reached the system clipboard (or was given up on). */
     clipboardConsumed(state) {
@@ -421,7 +426,11 @@ register('mini_browser_nav_result', (data, dispatch) => {
 register('mini_browser_clipboard', (data, dispatch) => {
   if (!isDict(data)) return
   const text = str(data.text)
-  dispatch(clipboardReceived(text.length > MAX_CLIPBOARD_CHARS ? text.slice(0, MAX_CLIPBOARD_CHARS) : text))
+  const requestId = typeof data.requestId === 'string' && data.requestId ? data.requestId : null
+  dispatch(clipboardReceived({
+    text: text.length > MAX_CLIPBOARD_CHARS ? text.slice(0, MAX_CLIPBOARD_CHARS) : text,
+    requestId,
+  }))
 })
 
 register('mini_browser_vault_list', (data, dispatch) => {

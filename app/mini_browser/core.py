@@ -316,6 +316,9 @@ class BrowserCore:
         self._creating = 0  # Target.createTarget calls awaiting their reply
         self._own_targets: Dict[str, asyncio.Future] = {}
         self._abandoned_targets: Set[str] = set()
+        # Tabs being opened (reservation token -> owner): they count against
+        # the tab limits until they are registered (see _reserve_tab).
+        self._opening: Dict[object, Optional[str]] = {}
         self._adoptions: Set[asyncio.Task] = set()
         self._front_tab: Dict[int, str] = {}  # window id -> its active tab id
         self._tab_ids = itertools.count(1)
@@ -1497,10 +1500,7 @@ class BrowserCore:
             if viewed is not None and self._claimable(viewed, owner):
                 tab = viewed
         if tab is None:
-            count = self._owner_tab_count(owner)
-            if count >= self.settings.max_agent_tabs:
-                raise MiniBrowserError("MINI_BROWSER_TOO_MANY_TABS", count=count)
-            tab = await self._open_tab(owner)
+            tab = await self._open_tab(owner, owner_limit=self.settings.max_agent_tabs)
         self._claim(tab, owner)
         return tab
 
@@ -1589,10 +1589,7 @@ class BrowserCore:
             elif isinstance(url, str) and url.strip():
                 target = self._resolve(url, allow_search=True)
             await self.ensure_started()
-            count = self._owner_tab_count(owner)
-            if count >= self.settings.max_agent_tabs:
-                raise MiniBrowserError("MINI_BROWSER_TOO_MANY_TABS", count=count)
-            tab = await self._open_tab(owner)
+            tab = await self._open_tab(owner, owner_limit=self.settings.max_agent_tabs)
             self._claim(tab, owner)
             self._follow(tab)
             async with tab.lock:
@@ -1669,6 +1666,10 @@ class BrowserCore:
                     tab=self._tab_index(tab),
                     owner=tab.owner_label or "another agent",
                 )
+            if tab.user_control:
+                # The user is working in it (a CAPTCHA, a form): closing it
+                # would throw that work away.
+                return action_error("MINI_BROWSER_USER_IN_CONTROL"), tab
             index = self._tab_index(tab)
             if len(self.tabs) == 1:
                 await self._open_tab(None)
@@ -2216,8 +2217,14 @@ class BrowserCore:
     # Tabs and pages
     # ═════════════════════════════════════════════════════════════════════════
 
-    async def _open_tab(self, owner: Optional[str]) -> Tab:
+    async def _open_tab(
+        self, owner: Optional[str], *, owner_limit: Optional[int] = None
+    ) -> Tab:
         """A new tab for ``owner`` (None = the user), in a window of its own.
+
+        ``owner_limit``: at most this many tabs for ``owner``. The tab counts
+        against the limits from this call on (see _reserve_tab), so
+        concurrent opens can never exceed them.
 
         Opening runs in a task of its own: a caller cancelled half-way (the
         user pressed Stop) never leaves an ownerless or half-set-up tab
@@ -2225,8 +2232,35 @@ class BrowserCore:
         """
         if self._context is None:
             raise self._not_running_error()
-        task = self.spawn(self._open_tab_now(owner))
+        token = self._reserve_tab(owner, owner_limit)
+        try:
+            task = self.spawn(self._open_tab_now(owner, token))
+        except BaseException:
+            self._opening.pop(token, None)
+            raise
+        # Released once the tab is registered, or when opening fails or is
+        # cancelled (even before the task ever ran).
+        task.add_done_callback(lambda _task: self._opening.pop(token, None))
         return await _wait_shared(task, "MINI_BROWSER_CLOSED")
+
+    def _reserve_tab(self, owner: Optional[str], owner_limit: Optional[int]) -> object:
+        """Count a tab about to be opened against the limits; its token.
+
+        Runs before the first await of an open, so two concurrent opens can
+        never both pass a check while the tab count is one below a limit.
+        """
+        total = len(self.tabs) + len(self._opening)
+        if total >= MAX_TOTAL_TABS:
+            raise MiniBrowserError("MINI_BROWSER_TOO_MANY_TABS", count=total)
+        if owner is not None and owner_limit is not None:
+            count = self._owner_tab_count(owner) + sum(
+                1 for opening in self._opening.values() if opening == owner
+            )
+            if count >= owner_limit:
+                raise MiniBrowserError("MINI_BROWSER_TOO_MANY_TABS", count=count)
+        token = object()
+        self._opening[token] = owner
+        return token
 
     def _not_running_error(self) -> MiniBrowserError:
         """No browser: closed under the caller's feet, or simply not started."""
@@ -2234,12 +2268,10 @@ class BrowserCore:
             return MiniBrowserError("MINI_BROWSER_CLOSED")
         return MiniBrowserError("MINI_BROWSER_NOT_RUNNING")
 
-    async def _open_tab_now(self, owner: Optional[str]) -> Tab:
+    async def _open_tab_now(self, owner: Optional[str], token: object) -> Tab:
         context = self._context
         if context is None:
             raise self._not_running_error()
-        if len(self.tabs) >= MAX_TOTAL_TABS:
-            raise MiniBrowserError("MINI_BROWSER_TOO_MANY_TABS", count=len(self.tabs))
         try:
             page, cdp, target_id, own_window = await self._create_page(context)
         except MiniBrowserError:
@@ -2262,6 +2294,7 @@ class BrowserCore:
             tab = self._register_tab(page, owner)
         elif tab.owner != owner:
             self._apply_owner(tab, owner)
+        self._opening.pop(token, None)  # self.tabs counts it from now on
         await self._setup_page(tab, cdp, target_id, own_window=own_window)
         return tab
 
@@ -2691,7 +2724,7 @@ class BrowserCore:
                 return
             opener_tab = self._page_tabs.get(opener) if opener is not None else None
             owner = opener_tab.owner if opener_tab is not None else None
-            if len(self.tabs) >= MAX_TOTAL_TABS or (
+            if len(self.tabs) + len(self._opening) >= MAX_TOTAL_TABS or (
                 owner is not None
                 and self._owner_tab_count(owner)
                 >= self.settings.max_agent_tabs + POPUP_SLACK
@@ -3038,7 +3071,11 @@ class BrowserCore:
         self._downloads_active += 1
         path: Optional[Path] = None
         try:
-            name = _safe_filename(getattr(download, "suggested_filename", "") or "")
+            # The page picks the name: a saved password in it is masked before
+            # it becomes a file name, so the path in logs, notices and on disk
+            # never carries it.
+            suggested = str(getattr(download, "suggested_filename", "") or "")
+            name = _safe_filename(scrub(suggested, self._secrets()))
             dangerous = _is_dangerous_file(name)
             path = await asyncio.to_thread(
                 _reserve_download_path, config.downloads_dir(owner), name
@@ -3064,7 +3101,9 @@ class BrowserCore:
                 self.add_event(
                     tab, EVENT_DOWNLOAD, message, path=str(path), dangerous=dangerous
                 )
-            logger.info(f"[MiniBrowser] Download saved: {path.name}")
+            logger.info(
+                f"[MiniBrowser] Download saved: {scrub(path.name, self._secrets())}"
+            )
         except Exception as exc:
             if path is not None:
                 await asyncio.to_thread(_remove_quietly, path)
@@ -3072,7 +3111,7 @@ class BrowserCore:
                 self.add_event(
                     tab,
                     EVENT_ERROR,
-                    f"A download failed: {_clip(first_line(exc), 200)}",
+                    f"A download failed: {_clip(scrub(first_line(exc), self._secrets()), 200)}",
                 )
             logger.warning(f"[MiniBrowser] Download failed: {type(exc).__name__}")
         finally:

@@ -51,6 +51,8 @@ export interface KeyboardSink {
 }
 
 interface PendingCopy {
+  /** Sent with the request and echoed in the reply that answers it. */
+  requestId: string
   resolve(text: string): void
   reject(err: Error): void
   /** A newer copy (or leaving the page) replaced this one: its failure is
@@ -84,13 +86,17 @@ export function useKeyboardSink({
   const leavingTabRef = useRef<string | null>(null)
   const lastEscapeRef = useRef(0)
   const copyRef = useRef<PendingCopy | null>(null)
+  const copySeqRef = useRef(0)
 
   // ── Copy / cut ───────────────────────────────────────────────────────
   const copySelection = useCallback((cut: boolean) => {
     const tab = target.current.tab
     if (!tab) return
+    const tabId = tab.id
     input.flushText()
-    if (!sendLive('mini_browser_copy', { tabId: tab.id })) return
+    copySeqRef.current += 1
+    const requestId = `copy-${copySeqRef.current}`
+    if (!sendLive('mini_browser_copy', { tabId, requestId })) return
     const previous = copyRef.current
     if (previous) {
       previous.superseded = true
@@ -105,6 +111,7 @@ export function useKeyboardSink({
       settle.reject(new Error('timeout'))
     }, COPY_TIMEOUT_MS)
     const pending: PendingCopy = {
+      requestId,
       superseded: false,
       resolve: (value) => {
         window.clearTimeout(timer)
@@ -116,19 +123,26 @@ export function useKeyboardSink({
       },
     }
     copyRef.current = pending
+    if (cut) input.noteUserInput()
     // Started inside the key press, which is what lets the browser write.
     void copyTextWhenReady(text).then((outcome) => {
       if (outcome === 'failed' && !pending.superseded) onCopyFailed()
+      // Cut = copy, then let the page delete the selection itself, in the
+      // tab it was copied from. Only once this copy is on the clipboard: sent
+      // any earlier, the delete could reach the page before the copy had
+      // read the selection, and the text would be lost.
+      if (cut && outcome === 'copied' && !pending.superseded) {
+        input.sendTo(tabId, { kind: 'key', key: 'x', modifiers: cutShortcut() })
+      }
     })
-    // Cut = copy, then let the page delete the selection itself.
-    if (cut) input.pressKey('x', cutShortcut())
   }, [input, onCopyFailed, target])
 
   // The backend's copy reply arrives through the store.
   useEffect(() => {
     if (!clipboard) return
     const pending = copyRef.current
-    if (pending) {
+    // A late reply to an earlier (superseded) request does not answer this one.
+    if (pending && (clipboard.requestId === null || clipboard.requestId === pending.requestId)) {
       copyRef.current = null
       pending.resolve(clipboard.text)
     }

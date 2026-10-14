@@ -116,6 +116,14 @@ JS_COMMON = r"""
     }
     return false;
   };
+  // The button or link a click on ``el`` counts for (as Playwright's click
+  // retargets it); form fields stand for themselves.
+  const buttonLinkOf = (el) => {
+    if (!el || !el.closest || el.isContentEditable || el.matches('input, textarea, select')) {
+      return null;
+    }
+    return el.closest('button, [role=button], a, [role=link]');
+  };
   const deepElementFromPoint = (x, y) => {
     let n = document.elementFromPoint(x, y);
     while (n && n.shadowRoot && n.shadowRoot.elementFromPoint) {

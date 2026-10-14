@@ -7,7 +7,6 @@ All configuration is read from settings.json - no .env file is used.
 
 import json
 import os
-import re
 import threading
 from pathlib import Path
 from typing import Any, Dict, Optional, Tuple
@@ -516,33 +515,6 @@ def is_prewarm_all_drives_enabled() -> bool:
 # Mini Browser settings (settings.json "mini_browser"; consumed by app/mini_browser)
 # ─────────────────────────────────────────────────────────────────────────────
 
-_MINI_BROWSER_BOOLS = frozenset(
-    {"headless", "adblock", "humanlike", "show_cursor", "allow_file_urls"}
-)
-# Inclusive range each numeric setting is clamped to.
-_MINI_BROWSER_RANGES: Dict[str, Tuple[int, int]] = {
-    "max_fps": (1, 30),
-    "jpeg_quality": (30, 95),
-    "max_agent_tabs": (1, 20),
-    "idle_shutdown_minutes": (0, 24 * 60),
-}
-# Playwright browser channels ("" = the default headless shell).
-_MINI_BROWSER_CHANNELS = frozenset(
-    {
-        "",
-        "chromium",
-        "chrome",
-        "chrome-beta",
-        "chrome-dev",
-        "chrome-canary",
-        "msedge",
-        "msedge-beta",
-        "msedge-dev",
-        "msedge-canary",
-    }
-)
-_LOCALE_RE = re.compile(r"[A-Za-z]{2,3}(-[A-Za-z0-9]{1,8})*")
-_MAX_SEARCH_URL_CHARS = 2048
 # Serializes this module's read-modify-write of settings.json between threads
 # (the Mini Browser saves from its own thread).
 _settings_write_lock = threading.Lock()
@@ -551,44 +523,12 @@ _settings_write_lock = threading.Lock()
 def _clean_mini_browser_value(key: str, value: Any) -> Tuple[bool, Any]:
     """``(True, cleaned)`` for a usable value of setting ``key``, else ``(False, None)``.
 
-    Numbers are clamped to their range; anything of the wrong type is unusable.
+    The rules are ``app.mini_browser.config.clean_setting``, the same ones
+    the Mini Browser applies, so a value means the same however it is read.
     """
-    if key in _MINI_BROWSER_BOOLS:
-        return (True, value) if isinstance(value, bool) else (False, None)
-    if key in _MINI_BROWSER_RANGES:
-        if isinstance(value, bool) or not isinstance(value, (int, float)):
-            return False, None
-        try:
-            number = round(value)
-        except (OverflowError, ValueError):  # inf / nan
-            return False, None
-        low, high = _MINI_BROWSER_RANGES[key]
-        return True, max(low, min(high, number))
-    if not isinstance(value, str):
-        return False, None
-    text = value.strip()
-    if key == "search_url":
-        if (
-            len(text) > _MAX_SEARCH_URL_CHARS
-            or not text.isprintable()
-            or not text.lower().startswith(("https://", "http://"))
-        ):
-            return False, None
-        try:
-            # Every brace must belong to the {query} slot, and the slot must be there.
-            usable = "\x00" in text.format(query="\x00")
-        except (IndexError, KeyError, ValueError):
-            usable = False
-        return (True, text) if usable else (False, None)
-    if key == "locale":
-        text = text.replace("_", "-")
-        if text and (len(text) > 35 or not _LOCALE_RE.fullmatch(text)):
-            return False, None
-        return True, text
-    if key == "channel":
-        text = text.lower()
-        return (True, text) if text in _MINI_BROWSER_CHANNELS else (False, None)
-    return False, None
+    from app.mini_browser.config import clean_setting
+
+    return clean_setting(key, value)
 
 
 def get_mini_browser_settings() -> Dict[str, Any]:

@@ -22,9 +22,13 @@ never cause a late click.
 
 Take control: once the user takes control of the tab (``tab.user_control``)
 an operation stops sending input at its next step (see ``human.py``) and
-fails with MINI_BROWSER_USER_IN_CONTROL. When the tab or the whole browser
-is closed under an operation, it fails with MINI_BROWSER_CLOSED instead of
-reporting success.
+fails with MINI_BROWSER_USER_IN_CONTROL. Waits for an element run in short
+slices that check control, and the action itself never waits inside the
+browser driver (``page.mouse`` / ``page.keyboard``, or an element handle
+via :func:`act_on_element`): a Playwright Locator action keeps waiting there
+for its element, nothing can call that wait off, and it would act after the
+user took control. When the tab or the whole browser is closed under an
+operation, it fails with MINI_BROWSER_CLOSED instead of reporting success.
 """
 
 from __future__ import annotations
@@ -73,6 +77,11 @@ from app.mini_browser.types import EVENT_NOTICE
 # How long an element may take to become actionable, then the real action.
 ACTION_WAIT_MS = 5000
 ACT_TIMEOUT_MS = 1500
+# Waiting for an element runs in slices this long, so taking control ends
+# the wait within one slice.
+CONTROL_SLICE_MS = 250
+# Pause before aiming again at an element that is moving or covered.
+REAIM_PAUSE_S = 0.05
 # How long an action follows a navigation it started.
 NAV_WAIT_S = 15.0
 # Page "settled" = no DOM mutation for SETTLE_QUIET_MS, or SETTLE_MAX_MS.
@@ -172,6 +181,10 @@ HITS_JS = (
   const ctl = (el.tagName === 'LABEL' && el.control) ? el.control : el;
   if (flatContains(el, hit) || flatContains(ctl, hit)) return true;
   if (hit.tagName === 'LABEL' && hit.control === ctl) return true;
+  // Like Playwright's click: anywhere on the button or link the element is
+  // part of counts as the element.
+  const bl = buttonLinkOf(el);
+  if (bl && flatContains(bl, hit)) return true;
   // Text slotted straight into a component hit-tests as its host.
   return isHostOf(hit, el);
 }
@@ -201,8 +214,10 @@ DIAGNOSE_JS = (
   const x = (Math.max(r.left, 0) + Math.min(r.right, vw)) / 2;
   const y = (Math.max(r.top, 0) + Math.min(r.bottom, vh)) / 2;
   const hit = deepElementFromPoint(x, y);
+  const bl = buttonLinkOf(el);
   if (hit && !flatContains(el, hit) && !flatContains(ctl, hit) && !isHostOf(hit, el)
-      && !(hit.tagName === 'LABEL' && hit.control === ctl)) {
+      && !(hit.tagName === 'LABEL' && hit.control === ctl)
+      && !(bl && flatContains(bl, hit))) {
     let name = hit.tagName.toLowerCase();
     if (hit.id) name += '#' + hit.id;
     const text = String(hit.innerText || hit.getAttribute('aria-label') || '').replace(/\s+/g, ' ').trim();
@@ -915,21 +930,40 @@ async def _unusable(
 
 
 async def wait_actionable(
-    locator: Any, element_id: int, *, hover: bool = False, button: str = "left"
+    tab: Any,
+    locator: Any,
+    element_id: int,
+    *,
+    hover: bool = False,
+    button: str = "left",
+    wait_ms: Optional[float] = None,
 ) -> None:
-    """Wait (up to ACTION_WAIT_MS) until the element could be clicked/hovered.
+    """Wait (up to ``wait_ms``, default ACTION_WAIT_MS) until the element
+    could be clicked/hovered.
 
     A trial action: Playwright scrolls it into view and checks it is
-    visible, stable, enabled and not covered, but does not act.
+    visible, stable, enabled and not covered, but does not act. It runs in
+    CONTROL_SLICE_MS slices, so once the user takes control of the tab the
+    wait ends (MINI_BROWSER_USER_IN_CONTROL) within one slice.
     """
-    try:
-        if hover:
-            await locator.hover(trial=True, timeout=ACTION_WAIT_MS)
-        else:
-            await locator.click(trial=True, timeout=ACTION_WAIT_MS, button=button)
-    except Exception as exc:
-        error = await _unusable(locator, element_id, exc)
-        raise error from None
+    loop = asyncio.get_running_loop()
+    deadline = loop.time() + (ACTION_WAIT_MS if wait_ms is None else wait_ms) / 1000.0
+    while True:
+        human.ensure_control(tab)
+        timeout = max(
+            1.0, min(float(CONTROL_SLICE_MS), (deadline - loop.time()) * 1000.0)
+        )
+        try:
+            if hover:
+                await locator.hover(trial=True, timeout=timeout)
+            else:
+                await locator.click(trial=True, timeout=timeout, button=button)
+            return
+        except Exception as exc:
+            if _is_pw_timeout(exc) and loop.time() < deadline:
+                continue
+            error = await _unusable(locator, element_id, exc)
+            raise error from None
 
 
 async def _box(locator: Any) -> Optional[Dict[str, float]]:
@@ -953,6 +987,24 @@ def _inside(core: Any, tab: Any, x: float, y: float) -> Tuple[float, float]:
     return (min(max(0.0, x), width - 1.0), min(max(0.0, y), height - 1.0))
 
 
+def _fallback_points(
+    core: Any, tab: Any, box: Dict[str, float]
+) -> List[Tuple[float, float]]:
+    """The element's centre, then the centre of its part inside the viewport."""
+    width, height = human.viewport_of(core, tab)
+    points = [
+        _inside(core, tab, box["x"] + box["width"] / 2, box["y"] + box["height"] / 2)
+    ]
+    left, top = max(0.0, box["x"]), max(0.0, box["y"])
+    right = min(width, box["x"] + box["width"])
+    bottom = min(height, box["y"] + box["height"])
+    if right > left and bottom > top:
+        visible = _inside(core, tab, (left + right) / 2, (top + bottom) / 2)
+        if visible not in points:
+            points.append(visible)
+    return points
+
+
 async def _aim(core: Any, tab: Any, locator: Any) -> Optional[Tuple[float, float]]:
     """A human target point on the element that a click would really hit."""
     box = await _box(locator)
@@ -961,36 +1013,42 @@ async def _aim(core: Any, tab: Any, locator: Any) -> Optional[Tuple[float, float
     x, y = _inside(core, tab, *human.target_point(box))
     if await _hits(locator, x, y):
         return (x, y)
-    cx, cy = _inside(
-        core, tab, box["x"] + box["width"] / 2, box["y"] + box["height"] / 2
-    )
-    if await _hits(locator, cx, cy):
-        return (cx, cy)
+    for cx, cy in _fallback_points(core, tab, box):
+        if await _hits(locator, cx, cy):
+            return (cx, cy)
     return None
 
 
-async def _plain_click(
-    core: Any, tab: Any, locator: Any, element_id: int, *, button: str, click_count: int
-) -> None:
-    """Playwright's own click (re-checks actionability, short timeout)."""
-    box = await _box(locator)
-    centre = None
-    if box:
-        centre = _inside(
-            core, tab, box["x"] + box["width"] / 2, box["y"] + box["height"] / 2
+async def _aim_at(
+    core: Any,
+    tab: Any,
+    locator: Any,
+    element_id: int,
+    deadline: float,
+    *,
+    hover: bool = False,
+    button: str = "left",
+) -> Tuple[float, float]:
+    """A point on the element that a click would hit; while there is none
+    (it is covered, moving or briefly gone) waits for the element with trial
+    actions, which never act, until ``deadline`` (event-loop time)."""
+    loop = asyncio.get_running_loop()
+    while True:
+        human.ensure_control(tab)
+        point = await _aim(core, tab, locator)
+        if point is not None:
+            return point
+        left_ms = (deadline - loop.time()) * 1000.0
+        if left_ms <= 0:
+            raise MiniBrowserError(
+                "MINI_BROWSER_ELEMENT_NOT_INTERACTABLE",
+                element_id=element_id,
+                detail=await _diagnose(locator),
+            )
+        await wait_actionable(
+            tab, locator, element_id, hover=hover, button=button, wait_ms=left_ms
         )
-        await human.publish(core, tab, centre[0], centre[1], "move")
-    human.ensure_control(tab)
-    try:
-        await locator.click(
-            button=button, click_count=click_count, timeout=ACT_TIMEOUT_MS
-        )
-    except Exception as exc:
-        error = await _unusable(locator, element_id, exc)
-        raise error from None
-    if centre:
-        tab.mouse_x, tab.mouse_y = centre
-        await human.publish(core, tab, centre[0], centre[1], "click")
+        await asyncio.sleep(REAIM_PAUSE_S)
 
 
 async def pointer_click(
@@ -1002,25 +1060,75 @@ async def pointer_click(
     button: str = "left",
     click_count: int = 1,
 ) -> None:
-    """Click like a person: curve to a point on the element, press, release.
+    """Click like a person: move to a point on the element, press, release.
 
-    The point is verified to hit the element before moving and again right
-    before pressing; if something covers it, Playwright's own click is used.
-    Stops (MINI_BROWSER_USER_IN_CONTROL) once the user takes control.
+    The point is checked to hit the element before the pointer moves and
+    again right before pressing. When something covers it or it moves away,
+    the click waits for the element and aims again (up to ACTION_WAIT_MS).
+
+    The press goes through ``page.mouse``, which acts at once or not at
+    all. Playwright's own click is never used: it waits inside the browser
+    driver until the element can be clicked, and since nothing can call
+    that wait off, it could click after the user took control. Stops
+    (MINI_BROWSER_USER_IN_CONTROL) once the user takes control.
     """
-    human.ensure_control(tab)
-    if humanlike_enabled(core):
-        point = await _aim(core, tab, locator)
-        if point is not None:
-            await human.move_mouse(core, tab, *point)
-            if await _hits(locator, *point):
-                await human.click_at(
-                    core, tab, *point, button=button, click_count=click_count
-                )
-                return
-    await _plain_click(
-        core, tab, locator, element_id, button=button, click_count=click_count
-    )
+    loop = asyncio.get_running_loop()
+    deadline = loop.time() + ACTION_WAIT_MS / 1000.0
+    while True:
+        point = await _aim_at(core, tab, locator, element_id, deadline, button=button)
+        await human.move_mouse(core, tab, *point)
+        if await _hits(locator, *point):
+            await human.click_at(
+                core, tab, *point, button=button, click_count=click_count
+            )
+            return
+        # It moved while the pointer travelled (e.g. the layout changed on
+        # hover): aim again.
+        if loop.time() >= deadline:
+            raise MiniBrowserError(
+                "MINI_BROWSER_ELEMENT_NOT_INTERACTABLE",
+                element_id=element_id,
+                detail=await _diagnose(locator),
+            )
+        await asyncio.sleep(REAIM_PAUSE_S)
+
+
+async def dispose_handle(handle: Any) -> None:
+    """Release an element handle (best effort, bounded)."""
+    try:
+        await asyncio.wait_for(handle.dispose(), 1.0)
+    except asyncio.CancelledError:
+        raise
+    except Exception:
+        pass
+
+
+async def act_on_element(
+    tab: Any, locator: Any, element_id: int, act: Callable[[Any], Awaitable[Any]]
+) -> Any:
+    """``act(handle)`` on the element, at once or not at all.
+
+    Finding the element may wait (that never acts). Then control is checked
+    and ``act`` runs on an element handle, which acts on the element it holds
+    right away or fails if that element is gone. A Locator action would keep
+    waiting inside the browser driver for its element instead, and since
+    nothing can call that wait off, it would act after the user took control.
+    """
+    try:
+        handle = await locator.element_handle(timeout=ACT_TIMEOUT_MS)
+    except Exception as exc:
+        error = await _unusable(locator, element_id, exc)
+        raise error from None
+    try:
+        human.ensure_control(tab)
+        return await act(handle)
+    except MiniBrowserError:
+        raise
+    except Exception as exc:
+        error = await _unusable(locator, element_id, exc)
+        raise error from None
+    finally:
+        await dispose_handle(handle)
 
 
 async def _field_info(locator: Any, element_id: int) -> Dict[str, Any]:
@@ -1039,12 +1147,8 @@ async def _has_focus(locator: Any) -> bool:
         return False
 
 
-async def _focus(locator: Any, element_id: int) -> None:
-    try:
-        await locator.focus(timeout=ACT_TIMEOUT_MS)
-    except Exception as exc:
-        error = await _unusable(locator, element_id, exc)
-        raise error from None
+async def _focus(tab: Any, locator: Any, element_id: int) -> None:
+    await act_on_element(tab, locator, element_id, lambda handle: handle.focus())
 
 
 def _not_typeable(info: Dict[str, Any]) -> str:
@@ -1328,7 +1432,7 @@ async def click(
 ) -> Dict[str, Any]:
     page = tab.page
     locator = await locate(tab, element_id)
-    await wait_actionable(locator, element_id, button=button)
+    await wait_actionable(tab, locator, element_id, button=button)
     with NavWatch(page) as watch:
         await pointer_click(
             core,
@@ -1352,40 +1456,41 @@ async def click(
 async def hover(core: Any, tab: Any, *, element_id: int) -> Dict[str, Any]:
     page = tab.page
     locator = await locate(tab, element_id)
-    await wait_actionable(locator, element_id, hover=True)
+    await wait_actionable(tab, locator, element_id, hover=True)
     with NavWatch(page) as watch:
-        point = await _aim(core, tab, locator) if humanlike_enabled(core) else None
-        if point is not None:
-            await human.move_mouse(core, tab, *point)
-            await human.pause(*human.HOVER_PAUSE, core=core)
-        else:
-            box = await _box(locator)
-            human.ensure_control(tab)
-            try:
-                await locator.hover(timeout=ACT_TIMEOUT_MS)
-            except Exception as exc:
-                error = await _unusable(locator, element_id, exc)
-                raise error from None
-            if box:
-                x, y = _inside(
-                    core, tab, box["x"] + box["width"] / 2, box["y"] + box["height"] / 2
-                )
-                tab.mouse_x, tab.mouse_y = x, y
-                await human.publish(core, tab, x, y, "move")
+        deadline = asyncio.get_running_loop().time() + ACTION_WAIT_MS / 1000.0
+        point = await _aim_at(core, tab, locator, element_id, deadline, hover=True)
+        await human.move_mouse(core, tab, *point)
+        await human.pause(*human.HOVER_PAUSE, core=core)
         note = await after_action(page, watch, core=core)
     return await _done(core, tab, f"Moved the pointer over element {element_id}.{note}")
 
 
-async def _clear(page: Any, tab: Any, locator: Any, info: Dict[str, Any]) -> None:
+# Element errors after which an action may still try another way.
+_ELEMENT_ERRORS = frozenset(
+    {"MINI_BROWSER_ELEMENT_NOT_INTERACTABLE", "MINI_BROWSER_ELEMENT_NOT_FOUND"}
+)
+
+
+async def _clear(
+    page: Any, tab: Any, locator: Any, element_id: int, info: Dict[str, Any]
+) -> None:
     human.ensure_control(tab)
     if info.get("tag") in ("INPUT", "TEXTAREA") or info.get("editable"):
         try:
-            await locator.fill("", timeout=ACT_TIMEOUT_MS)
-            return
-        except Exception as exc:
-            logger.debug(
-                f"[MiniBrowser] clearing with fill failed: {type(exc).__name__}"
+            # force: the field was just focused, so it takes input; a fill
+            # that waited for it could clear it after the user took control.
+            await act_on_element(
+                tab,
+                locator,
+                element_id,
+                lambda handle: handle.fill("", force=True, timeout=ACT_TIMEOUT_MS),
             )
+            return
+        except MiniBrowserError as exc:
+            if exc.code not in _ELEMENT_ERRORS:
+                raise
+            logger.debug(f"[MiniBrowser] clearing with fill failed: {exc.code}")
     # The keyboard fallback acts on whatever has focus: never once the user
     # has taken over (their field would be wiped).
     human.ensure_control(tab)
@@ -1529,7 +1634,7 @@ async def _set_whole_value(
     value = normalise_input_value(kind, given) if given else ""
     if value is None:
         raise _format_error(element_id, kind, given)
-    await wait_actionable(locator, element_id)
+    await wait_actionable(tab, locator, element_id)
     with NavWatch(page) as watch:
         if humanlike_enabled(core):
             # Point at it (no click: a click would open a picker or move the
@@ -1538,14 +1643,12 @@ async def _set_whole_value(
             if point is not None:
                 await human.move_mouse(core, tab, *point)
                 await human.pause(*human.HOVER_PAUSE, core=core)
-        human.ensure_control(tab)
-        try:
-            result = await locator.evaluate(
-                SET_VALUE_JS, {"value": value}, timeout=ACT_TIMEOUT_MS
-            )
-        except Exception as exc:
-            error = await _unusable(locator, element_id, exc)
-            raise error from None
+        result = await act_on_element(
+            tab,
+            locator,
+            element_id,
+            lambda handle: handle.evaluate(SET_VALUE_JS, {"value": value}),
+        )
         result = result if isinstance(result, dict) else {}
         now = result.get("value")
         if kind != "range" and not result.get("ok"):
@@ -1634,7 +1737,7 @@ async def type_text(
         return await _set_whole_value(
             core, tab, locator, element_id, str(info["type"]), text, submit
         )
-    await wait_actionable(locator, element_id)
+    await wait_actionable(tab, locator, element_id)
     failure = ""
     lost: Optional[int] = None
     with NavWatch(page) as watch:
@@ -1643,7 +1746,7 @@ async def type_text(
                 await pointer_click(core, tab, locator, element_id)
             human.ensure_control(tab)
             if not await _has_focus(locator):
-                await _focus(locator, element_id)
+                await _focus(tab, locator, element_id)
                 if not await _has_focus(locator):
                     raise MiniBrowserError(
                         "MINI_BROWSER_ELEMENT_NOT_INTERACTABLE",
@@ -1651,11 +1754,18 @@ async def type_text(
                         detail="it does not take keyboard input (it could not be focused)",
                     )
             if clear:
-                await _clear(page, tab, locator, info)
+                await _clear(page, tab, locator, element_id, info)
             else:
                 try:
-                    moved = await locator.evaluate(CARET_END_JS, timeout=2000)
-                except Exception:
+                    moved = await act_on_element(
+                        tab,
+                        locator,
+                        element_id,
+                        lambda handle: handle.evaluate(CARET_END_JS),
+                    )
+                except MiniBrowserError as exc:
+                    if exc.code not in _ELEMENT_ERRORS:
+                        raise
                     moved = False
                 if not moved:
                     human.ensure_control(tab)
@@ -1813,8 +1923,7 @@ async def press_key(
     combos = parse_keys(keys)
     if element_id is not None:
         locator = await locate(tab, element_id)
-        human.ensure_control(tab)
-        await _focus(locator, element_id)
+        await _focus(tab, locator, element_id)
     with NavWatch(page) as watch:
         for index, combo in enumerate(combos):
             human.ensure_control(tab)
@@ -1887,15 +1996,18 @@ async def select_option(
             if point is not None:
                 await human.move_mouse(core, tab, *point)
                 await human.pause(*human.HOVER_PAUSE, core=core)
-        human.ensure_control(tab)
-        try:
-            # The option was verified above; force also covers native selects
-            # hidden behind a custom dropdown, and never waits (so a Stop
-            # cannot lead to a late selection).
-            await locator.select_option(index=index, force=True, timeout=ACT_TIMEOUT_MS)
-        except Exception as exc:
-            error = await _unusable(locator, element_id, exc)
-            raise error from None
+        # The option was verified above; force also covers native selects
+        # hidden behind a custom dropdown. On the element handle it never
+        # waits, so neither a Stop nor taking control can lead to a late
+        # selection.
+        await act_on_element(
+            tab,
+            locator,
+            element_id,
+            lambda handle: handle.select_option(
+                index=index, force=True, timeout=ACT_TIMEOUT_MS
+            ),
+        )
         note = await after_action(page, watch, core=core)
     label = match.get("label") or value
     return await _done(
@@ -2239,15 +2351,15 @@ async def upload_file(
                     "MINI_BROWSER_INVALID_INPUT",
                     detail=f"Element {element_id} accepts only one file.",
                 )
-            human.ensure_control(tab)
-            try:
-                await locator.set_input_files(files, timeout=ACTION_WAIT_MS)
-            except Exception as exc:
-                error = await _unusable(locator, element_id, exc)
-                raise error from None
+            await act_on_element(
+                tab,
+                locator,
+                element_id,
+                lambda handle: handle.set_input_files(files, timeout=ACTION_WAIT_MS),
+            )
         else:
             # A styled button / drop zone that opens the file chooser.
-            await wait_actionable(locator, element_id)
+            await wait_actionable(tab, locator, element_id)
             try:
                 async with page.expect_file_chooser(
                     timeout=ACTION_WAIT_MS
@@ -2313,13 +2425,81 @@ def save_screenshot(owner: Optional[str], data: bytes) -> str:
     )
 
 
+# Tags the fields an agent screenshot must cover with data-mb-mask="<mark>":
+# the fields whose value observations never show (password fields, fields
+# that were password fields before a "show password" toggle, secret-looking
+# ones). Returns how many it tagged.
+MASK_FIELDS_JS = (
+    r"""
+(mark) => {
+"""
+    + SECRET_RULES_JS
+    + r"""
+  let count = 0;
+  const walk = (root) => {
+    const tw = document.createTreeWalker(root, NodeFilter.SHOW_ELEMENT);
+    for (let n = tw.nextNode(); n; n = tw.nextNode()) {
+      if (n.hasAttribute('data-mb-mask')) n.removeAttribute('data-mb-mask');
+      if ((n.tagName === 'INPUT' || n.tagName === 'TEXTAREA')
+          && (secretField(n) || maskedField(n))) {
+        n.setAttribute('data-mb-mask', mark);
+        count += 1;
+      }
+      if (n.shadowRoot) walk(n.shadowRoot);
+    }
+  };
+  walk(document);
+  return count;
+}
+"""
+)
+# Covered even where tagging failed (a frame that did not answer in time).
+MASK_SELECTOR = (
+    'input[type="password"], [data-mb-pw], [data-mb-mask="{mark}"], '
+    '[autocomplete~="current-password"], [autocomplete~="new-password"], '
+    '[autocomplete~="one-time-code"]'
+)
+MASK_COLOR = "#808080"
+
+
+async def _secret_masks(page: Any) -> List[Any]:
+    """Locators of the fields to cover in an agent screenshot, per frame."""
+    mark = os.urandom(6).hex()
+    try:
+        frames = list(page.frames)
+    except Exception:
+        frames = [page.main_frame]
+    masks = []
+    for frame in frames:
+        try:
+            if frame.is_detached():
+                continue
+            await asyncio.wait_for(
+                frame.evaluate(MASK_FIELDS_JS, mark), FRAME_LOCATE_TIMEOUT_S
+            )
+        except Exception as exc:
+            logger.debug(f"[MiniBrowser] screenshot mask: {type(exc).__name__}")
+        masks.append(frame.locator(MASK_SELECTOR.format(mark=mark)))
+    return masks
+
+
 async def screenshot(core: Any, tab: Any, *, full_page: bool = False) -> Dict[str, Any]:
-    """Save a PNG of the tab into the owner's workspace; returns its path."""
+    """Save a PNG of the tab into the owner's workspace; returns its path.
+
+    Password and other secret fields are covered (the same fields whose
+    value observations never show), so a revealed or autofilled password
+    never ends up in the image.
+    """
     page = tab.page
     try:
+        masks = await _secret_masks(page)
         data = await asyncio.wait_for(
             page.screenshot(
-                type="png", full_page=bool(full_page), timeout=SCREENSHOT_TIMEOUT_MS
+                type="png",
+                full_page=bool(full_page),
+                timeout=SCREENSHOT_TIMEOUT_MS,
+                mask=masks,
+                mask_color=MASK_COLOR,
             ),
             SCREENSHOT_TIMEOUT_MS / 1000.0 + 5.0,
         )

@@ -91,6 +91,16 @@ async def expect_error(coro, code):
     raise AssertionError(f"expected {code}")
 
 
+async def wait_for_js(page, condition, timeout_s=10.0):
+    """Wait until ``condition`` (a JS expression) is true in the page."""
+    loop = asyncio.get_running_loop()
+    deadline = loop.time() + timeout_s
+    while not await page.evaluate(condition):
+        if loop.time() > deadline:
+            raise AssertionError(f"timed out waiting for {condition}")
+        await asyncio.sleep(0.01)
+
+
 async def frames_ready(page, count, timeout_s=10.0):
     """Wait until ``count`` child frames have loaded their documents."""
     loop = asyncio.get_running_loop()
@@ -886,3 +896,137 @@ def test_a_password_in_the_address_never_reaches_results(browser, server):
         page_url.split("pass=", 1)[1],
     ):
         assert spelling not in dumped, spelling  # ...and none of it came back
+
+
+# ── PR review: input after the user took control, secrets in screenshots ────
+
+BLINKING_BUTTON = (
+    "<button id='b' style='margin:80px;padding:20px'>Pay</button>"
+    "<script>window.clicks = 0;"
+    "document.getElementById('b').addEventListener('click', () => window.clicks++);"
+    "window.blink = () => { if (window.blinked) return; window.blinked = true;"
+    " const b = document.getElementById('b'); b.style.display = 'none';"
+    " setTimeout(() => { b.style.display = ''; }, 400); };</script>"
+)
+
+
+@pytest.mark.parametrize("humanlike", [False, True])
+def test_a_click_waiting_for_its_element_never_lands_after_take_control(
+    browser, monkeypatch, fast_human, humanlike
+):
+    """The button disappears right after the trial click and comes back
+    400 ms later; the user takes control meanwhile. Playwright's own click
+    used to wait for it inside the driver and click it after the takeover."""
+    real_wait = ops.wait_actionable
+
+    async def wait_then_blink(tab, locator, element_id, **kwargs):
+        await real_wait(tab, locator, element_id, **kwargs)
+        await tab.page.evaluate("window.blink()")
+
+    monkeypatch.setattr(ops, "wait_actionable", wait_then_blink)
+
+    async def scenario(core, tab):
+        obs = await observe(core, tab, compact=True)
+        clicking = asyncio.ensure_future(
+            ops.click(core, tab, element_id=element(obs, '"Pay"'))
+        )
+        # Take control while the click waits for its button to come back.
+        await wait_for_js(tab.page, "window.blinked === true")
+        await asyncio.sleep(0.1)
+        tab.user_control = True
+        started = time.monotonic()
+        await expect_error(clicking, "MINI_BROWSER_USER_IN_CONTROL")
+        stopped_after = time.monotonic() - started
+        await asyncio.sleep(0.8)  # the button is back by now
+        return await tab.page.evaluate("window.clicks"), stopped_after
+
+    clicks, stopped_after = run(
+        browser, BLINKING_BUTTON, scenario, core=FakeCore(humanlike=humanlike)
+    )
+    assert clicks == 0
+    assert stopped_after < 1.0  # within a wait slice, not the whole 5 s wait
+
+
+def test_an_element_action_never_runs_after_take_control(browser):
+    """act_on_element waits for the element without acting, then checks
+    control: an element that shows up after the takeover is left alone."""
+    html = (
+        "<div id='host'></div><script>setTimeout(() => {"
+        " const s = document.createElement('select'); s.id = 's';"
+        " s.innerHTML = '<option>a</option><option>b</option>';"
+        " document.getElementById('host').appendChild(s); }, 300)</script>"
+    )
+
+    async def scenario(core, tab):
+        acted = []
+
+        async def act(handle):
+            acted.append(True)
+            await handle.select_option(index=1)
+
+        locator = tab.page.locator("#s")
+        selecting = asyncio.ensure_future(ops.act_on_element(tab, locator, 1, act))
+        await asyncio.sleep(0.1)
+        tab.user_control = True
+        await expect_error(selecting, "MINI_BROWSER_USER_IN_CONTROL")
+        await asyncio.sleep(0.4)
+        return acted, await tab.page.evaluate("document.getElementById('s').value")
+
+    acted, value = run(browser, html, scenario)
+    assert acted == [] and value == "a"
+
+
+SECRET_FIELDS_PAGE = (
+    "<body style='margin:0;background:#fff'>"
+    "<input id='pw' type='password' value='hunter2-hunter2' style='position:absolute;"
+    "left:20px;top:20px;width:300px;height:40px;font-size:28px;border:0;outline:0;"
+    "padding:0;color:#000;background:#fff'>"
+    "<input id='ac' type='text' autocomplete='current-password' value='opensesame-42'"
+    " style='position:absolute;left:20px;top:100px;width:300px;height:40px;"
+    "font-size:28px;border:0;outline:0;padding:0;color:#000;background:#fff'>"
+    "<input id='name' type='text' value='Alice Example' style='position:absolute;"
+    "left:20px;top:180px;width:300px;height:40px;font-size:28px;border:0;outline:0;"
+    "padding:0;color:#000;background:#fff'>"
+    "</body>"
+)
+FIELD_BOXES = {"pw": (20, 20, 320, 60), "ac": (20, 100, 320, 140)}
+NAME_BOX = (20, 180, 320, 220)
+
+
+def _colors(png: bytes, box) -> set:
+    import io
+
+    from PIL import Image
+
+    region = Image.open(io.BytesIO(png)).convert("RGB").crop(box)
+    return {color for _count, color in region.getcolors(maxcolors=1 << 20)}
+
+
+@pytest.mark.parametrize("full_page", [False, True])
+def test_screenshots_cover_password_fields_even_after_a_reveal(
+    browser, monkeypatch, tmp_path, full_page
+):
+    """A "show password" toggle turned the (observed, autofilled) password
+    field into a text field: the agent's screenshot still covers it, and
+    every other secret field, but nothing else."""
+    from pathlib import Path
+
+    monkeypatch.setattr(ops, "_screenshots_dir", lambda owner: tmp_path)
+
+    async def scenario(core, tab):
+        # run() observed the page: #pw is remembered as a password field.
+        await tab.page.evaluate("document.getElementById('pw').type = 'text'")
+        raw = await tab.page.screenshot(type="png")
+        result = await ops.screenshot(core, tab, full_page=full_page)
+        after = await tab.page.screenshot(type="png")
+        return raw, Path(result["file_path"]).read_bytes(), after
+
+    raw, shot, after = run(browser, SECRET_FIELDS_PAGE, scenario)
+    grey = {(0x80, 0x80, 0x80)}
+    for name, box in FIELD_BOXES.items():
+        assert len(_colors(raw, box)) > 1, name  # the text shows on the page
+        assert _colors(shot, box) == grey, name  # ... but not in the screenshot
+    assert len(_colors(shot, NAME_BOX)) > 1  # an ordinary field is left alone
+    assert grey.isdisjoint(_colors(shot, NAME_BOX))
+    # The cover is only in the agent's image, never left on the page.
+    assert len(_colors(after, FIELD_BOXES["pw"])) > 1

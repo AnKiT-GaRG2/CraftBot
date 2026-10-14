@@ -942,6 +942,31 @@ def test_copy_replies_to_requester_and_scrubs_autofilled_passwords(env):
     run(go)
 
 
+def test_copy_reply_names_its_request(env):
+    """A cut deletes the selection only once ITS copy reply is in (PR review)."""
+
+    async def go():
+        env.core.tabs["t1"] = SimpleNamespace(filled_secrets=[])
+        env.core.selection = "picked"
+        ws, channel = connect(env)
+        await env.mb.handle(
+            ws, "mini_browser_copy", {"tabId": "t1", "requestId": "copy-7"}
+        )
+        await env.mb.handle(ws, "mini_browser_copy", {"tabId": "t1"})
+        assert channel.data("mini_browser_clipboard") == [
+            {"text": "picked", "requestId": "copy-7"},
+            {"text": "picked"},
+        ]
+        await env.mb.handle(
+            ws, "mini_browser_copy", {"tabId": "t1", "requestId": ["x"]}
+        )
+        assert channel.data("mini_browser_event")[-1]["code"] == (
+            "MINI_BROWSER_INVALID_INPUT"
+        )
+
+    run(go)
+
+
 def test_ops_needing_a_browser_report_not_running(env):
     async def go():
         env.host_started = False
@@ -1964,9 +1989,9 @@ def test_settings_are_validated_and_clamped(monkeypatch):
         app_config, "get_settings", lambda reload=False: {"mini_browser": stored}
     )
     settings = app_config.get_mini_browser_settings()
-    assert settings["headless"] is True  # wrong type -> default
+    assert settings["headless"] is False  # the word counts (see clean_setting)
     assert settings["adblock"] is False
-    assert settings["humanlike"] is True
+    assert settings["humanlike"] is False  # 0 / 1 count too
     assert settings["show_cursor"] is False
     assert settings["max_fps"] == 30
     assert settings["jpeg_quality"] == 30
@@ -1976,6 +2001,75 @@ def test_settings_are_validated_and_clamped(monkeypatch):
     assert settings["idle_shutdown_minutes"] == 30
     assert settings["locale"] == "ja-JP"
     assert settings["channel"] == "msedge"
+
+
+# One set of rules, whichever way the settings are read (PR review).
+SETTING_SAMPLES = (
+    [
+        ("headless", value)
+        for value in (
+            "false",
+            "no",
+            "On",
+            " TRUE ",
+            0,
+            1,
+            2,
+            True,
+            False,
+            "maybe",
+            None,
+        )
+    ]
+    + [
+        ("max_fps", value)
+        for value in ("20", " 5.6 ", 500, -3, 7.5, float("nan"), "inf", "x", True, None)
+    ]
+    + [("idle_shutdown_minutes", value) for value in ("0", 0, "90", 10**9, [], {})]
+    + [
+        ("search_url", value)
+        for value in (
+            "https://x.example/?q={query}",
+            " http://y/?s={query} ",
+            "ftp://z",
+        )
+    ]
+    + [("locale", value) for value in (" ja_JP ", "", "en-US", "x" * 40, "a b", 5)]
+    + [("channel", value) for value in ("MSEdge", "", "firefox", None)]
+)
+
+
+@pytest.mark.parametrize("key,value", SETTING_SAMPLES)
+def test_both_settings_readers_agree(monkeypatch, key, value):
+    from app.mini_browser.config import MiniBrowserSettings
+
+    monkeypatch.setattr(
+        app_config, "get_settings", lambda reload=False: {"mini_browser": {key: value}}
+    )
+    via_app = app_config.get_mini_browser_settings()[key]
+    via_mini = MiniBrowserSettings.from_mapping({key: value}).to_dict()[key]
+    assert via_app == via_mini and type(via_app) is type(via_mini), (via_app, via_mini)
+
+
+def test_settings_strings_mean_the_same_everywhere(monkeypatch):
+    """The review's examples: "false" and "20" in settings.json."""
+    from app.mini_browser import config as mb_config
+
+    stored = {"headless": "false", "max_fps": "20"}
+    monkeypatch.setattr(
+        app_config, "get_settings", lambda reload=False: {"mini_browser": stored}
+    )
+    settings = app_config.get_mini_browser_settings()
+    assert settings["headless"] is False and settings["max_fps"] == 20
+    loaded = mb_config.load_settings()  # what the browser actually uses
+    assert loaded.headless is False and loaded.max_fps == 20
+
+
+def test_settings_defaults_agree():
+    from app.mini_browser.config import MiniBrowserSettings
+
+    shipped = app_config._get_default_settings()["mini_browser"]
+    assert shipped == MiniBrowserSettings().to_dict()
 
 
 @pytest.mark.parametrize(

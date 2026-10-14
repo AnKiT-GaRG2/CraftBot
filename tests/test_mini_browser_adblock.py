@@ -19,6 +19,11 @@ from pathlib import Path
 import pytest
 
 from app.mini_browser import adblock
+from tests.mini_browser_fixtures import (
+    import_playwright_or_skip,
+    is_browser_missing,
+    skip_browser_missing,
+)
 
 PROTECTED = [
     "google.com",
@@ -360,8 +365,12 @@ async def _load_three_times(port: int, profile: Path, patterns):
                 headless=True,
                 args=["--host-resolver-rules=MAP ads.doubleclick.net 127.0.0.1"],
             )
-        except Exception as exc:  # no Chromium build installed
-            pytest.skip(f"Chromium unavailable: {str(exc).splitlines()[0][:120]}")
+        except Exception as exc:
+            if not is_browser_missing(exc):
+                raise
+            skip_browser_missing(
+                f"Chromium is not installed: {str(exc).splitlines()[0][:120]}"
+            )
         try:
             page = context.pages[0] if context.pages else await context.new_page()
             failures = []
@@ -387,7 +396,7 @@ async def _load_three_times(port: int, profile: Path, patterns):
 
 
 def test_patterns_block_in_real_chromium_and_keep_the_http_cache(site, tmp_path):
-    pytest.importorskip("playwright.async_api")
+    import_playwright_or_skip()
     port, hits = site
     patterns = adblock.blocked_url_patterns(
         True, frozenset(), extra_domains=("localhost",)
@@ -412,7 +421,7 @@ def test_patterns_block_in_real_chromium_and_keep_the_http_cache(site, tmp_path)
 
 
 def test_without_ad_patterns_the_same_requests_go_through(site, tmp_path):
-    pytest.importorskip("playwright.async_api")
+    import_playwright_or_skip()
     port, hits = site
     patterns = adblock.blocked_url_patterns(False, frozenset())
     failures = asyncio.run(_load_three_times(port, tmp_path / "control", patterns))
