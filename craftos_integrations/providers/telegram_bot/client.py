@@ -91,18 +91,32 @@ class TelegramBotConfig:
     # Reply permission only: these contacts never become bot owners. Like
     # the incoming-chat filter, this preference applies to all bot accounts.
     auto_reply_contact_ids: List[str] = field(default_factory=list)
+    # Explicit owner control, separate from conversational reply permission.
+    # Keep the name used by existing locally configured owner mappings.
+    self_user_ids: List[str] = field(default_factory=list)
 
     def configuration_error(self) -> Optional[str]:
-        if not isinstance(self.auto_reply_contact_ids, list) or any(
-            not isinstance(cid, str)
-            or not cid.isascii()
-            or not cid.isdecimal()
-            or len(cid) > 20
-            or cid.startswith("0")
-            for cid in self.auto_reply_contact_ids
+        for label, contacts in (
+            ("Auto-reply contacts", self.auto_reply_contact_ids),
+            ("Owner contacts", self.self_user_ids),
         ):
-            return "Auto-reply contacts must be positive numeric Telegram user IDs, not names or @usernames."
+            if not isinstance(contacts, list) or any(
+                not isinstance(cid, str)
+                or not cid.isascii()
+                or not cid.isdecimal()
+                or len(cid) > 20
+                or cid.startswith("0")
+                for cid in contacts
+            ):
+                return f"{label} must be positive numeric Telegram user IDs, not names or @usernames."
         return None
+
+    def authenticates_owner(
+        self, contact_id: str, channel_id: str, chat_type: str
+    ) -> bool:
+        return isinstance(self.self_user_ids, list) and TelegramBotConfig(
+            auto_reply_contact_ids=self.self_user_ids
+        ).allows_auto_reply(contact_id, channel_id, chat_type)
 
     def allows_auto_reply(
         self, contact_id: str, channel_id: str, chat_type: str
@@ -379,6 +393,14 @@ class TelegramBotClient(BasePlatformClient):
             pass
 
         if self._message_callback:
+            owner_authenticated = (
+                cfg.authenticates_owner(
+                    str(from_user.get("id", "")),
+                    str(chat.get("id", "")),
+                    chat.get("type", ""),
+                )
+                and from_user.get("is_bot") is not True
+            )
             await self._message_callback(
                 PlatformMessage(
                     platform=self.spec.platform_id,
@@ -389,7 +411,7 @@ class TelegramBotClient(BasePlatformClient):
                     channel_name=chat.get("title", chat.get("first_name", "")),
                     message_id=str(message.get("message_id", "")),
                     timestamp=ts,
-                    raw=update,
+                    raw={**update, "is_self_message": owner_authenticated},
                     attachments=attachments,
                 )
             )

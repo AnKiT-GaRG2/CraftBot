@@ -180,6 +180,8 @@ RUN_CARRY_KEYS = (
     "integration_type",
     "auto_reply_allowed",
     "is_self_message",
+    "owner_authenticated",
+    "message_id",
     "workflow_skills",
     "workflow_action_sets",
     "run_source",
@@ -573,6 +575,7 @@ class AgentBase:
                 and why it should act.
         """
         session_id = trigger.session_id or MAIN_SESSION_ID
+        typing_task = None
 
         try:
             logger.debug(f"[REACT] starting for session {session_id}...")
@@ -698,6 +701,9 @@ class AgentBase:
             self._log_deferred_user_messages(trigger, session_id)
 
             trigger_data = self._extract_trigger_data(trigger, session_id)
+            from app.telegram_feedback import start_typing
+
+            typing_task = start_typing(trigger_data.payload or {})
 
             # ----- Run-start bookkeeping -----
             if trigger.source in RUN_START_SOURCES:
@@ -724,6 +730,9 @@ class AgentBase:
         except Exception as e:
             await self._handle_react_error(e, session_id, {})
         finally:
+            if typing_task is not None:
+                typing_task.cancel()
+                await asyncio.gather(typing_task, return_exceptions=True)
             self.state_manager.clean_state()
 
     # ----- Special workflow pre-checks -----
@@ -1197,6 +1206,12 @@ class AgentBase:
         if not prepared_actions:
             raise ValueError("No valid actions to execute")
 
+        from app.telegram_feedback import owner_permission_error
+
+        denied = owner_permission_error(trigger_data.payload or {})
+        if denied:
+            return {**denied, "run_ends": True, "has_errors": True}
+
         context = reasoning if reasoning else trigger_data.query
 
         actions_with_input = [(action, params) for action, params in prepared_actions]
@@ -1213,6 +1228,10 @@ class AgentBase:
                 "platform": trigger_data.platform,
                 "contact_id": trigger_data.contact_id,
                 "is_self_message": trigger_data.is_self_message,
+                "owner_authenticated": (trigger_data.payload or {}).get(
+                    "owner_authenticated"
+                )
+                is True,
                 "integration_type": (trigger_data.payload or {}).get(
                     "integration_type", ""
                 ),
@@ -2449,10 +2468,14 @@ class AgentBase:
                     "account",
                     "account_alias",
                     "integration_type",
+                    "message_id",
                 ):
                     trigger_payload[key] = payload.get(key, "")
                 trigger_payload["auto_reply_allowed"] = (
                     payload.get("auto_reply_allowed") is True
+                )
+                trigger_payload["owner_authenticated"] = (
+                    payload.get("owner_authenticated") is True
                 )
             if payload.get("pre_selected_skills"):
                 trigger_payload["workflow_skills"] = payload["pre_selected_skills"]
@@ -2574,7 +2597,9 @@ class AgentBase:
             # text or a listener-supplied authorization flag. Re-read it for
             # every event so removing a contact takes effect immediately.
             auto_reply_allowed = False
-            if integration_type == "telegram_bot" and not is_self_message:
+            owner_authenticated = False
+            reply_context = ""
+            if integration_type == "telegram_bot":
                 from craftos_integrations import load_config
                 from craftos_integrations.providers.telegram_bot.client import (
                     TelegramBotConfig,
@@ -2588,11 +2613,30 @@ class AgentBase:
                 raw = payload.get("raw") or {}
                 message = raw.get("message") if isinstance(raw, dict) else None
                 chat = message.get("chat") if isinstance(message, dict) else None
-                auto_reply_allowed = cfg.allows_auto_reply(
-                    contact_id,
-                    channel_id,
-                    chat.get("type", "") if isinstance(chat, dict) else "",
+                sender = message.get("from") if isinstance(message, dict) else None
+                authentic_source = (
+                    isinstance(sender, dict)
+                    and isinstance(chat, dict)
+                    and str(sender.get("id", "")) == contact_id
+                    and str(chat.get("id", "")) == channel_id
+                    and sender.get("is_bot") is not True
                 )
+                # Reclassify from persisted configuration. Listener flags and
+                # text such as "I am the owner" never grant owner authority.
+                owner_authenticated = authentic_source and cfg.authenticates_owner(
+                    contact_id, channel_id, chat.get("type", "")
+                )
+                is_self_message = owner_authenticated
+                auto_reply_allowed = (
+                    authentic_source
+                    and cfg.allows_auto_reply(
+                        contact_id, channel_id, chat.get("type", "")
+                    )
+                    and not owner_authenticated
+                )
+                from app.telegram_feedback import format_reply_context
+
+                reply_context = format_reply_context(message)
 
             # Multi-account: which connected account received this message
             # (attached by CraftBotEventSink). Replies MUST go out through
@@ -2660,7 +2704,22 @@ class AgentBase:
                     f"above.{fetch_hint}]\n"
                 )
 
-            if is_self_message:
+            if owner_authenticated:
+                event_content = (
+                    f"[AUTHENTICATED OWNER MESSAGE via {source}]\n"
+                    f"From: {contact_name} ({contact_id})\n"
+                    f"Chat ID: {channel_id}\n"
+                    f"Message ID: {message_id}\n"
+                    f"{reply_context}{message_body}\n{truncation_note}\n"
+                    f"INSTRUCTIONS: The saved owner-control user ID authenticates "
+                    f"this private message as the owner's instruction. Perform "
+                    f"the requested work using your tools, including inspecting "
+                    f"Agent Apps with agent_app_list_projects when asked. "
+                    f"Reply with the result using "
+                    f"send_telegram_bot_message with chat_id: '{channel_id}'."
+                    f"{account_note}"
+                )
+            elif is_self_message:
                 # Self-message = user is directly talking to the agent via their own platform.
                 event_content = (
                     f"[USER SELF-MESSAGE via {source}]\n"
@@ -2675,6 +2734,8 @@ class AgentBase:
                     f"From: {contact_name} ({contact_id}){location_str}\n"
                     f"Platform: {source}\n"
                     f"Chat ID: {channel_id}\n"
+                    f"Message ID: {message_id}\n"
+                    f"{reply_context}"
                     f'Message: "{message_body}"\n'
                     f"{truncation_note}\n"
                     f"INSTRUCTIONS: The owner has saved permission to auto-reply "
@@ -2702,6 +2763,7 @@ class AgentBase:
                     f"From: {contact_name} ({contact_id}){location_str}\n"
                     f"Platform: {source}\n"
                     f"{received_on}"
+                    f"{reply_context}"
                     f'Message: "{message_body}"\n'
                     f"{truncation_note}\n"
                     f"INSTRUCTIONS: Notify the user about this message on their "
@@ -2724,6 +2786,8 @@ class AgentBase:
                     "external_event": True,
                     "is_self_message": is_self_message,
                     "auto_reply_allowed": auto_reply_allowed,
+                    "owner_authenticated": owner_authenticated,
+                    "message_id": message_id,
                     "integration_type": integration_type,
                     "contact_id": contact_id,
                     "contact_name": contact_name,

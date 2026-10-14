@@ -224,6 +224,7 @@ def test_settings_edit_of_other_field_preserves_concurrent_contact_addition():
     assert get_config("telegram_bot") == {
         "self_messages_only": True,
         "auto_reply_contact_ids": ["1111", "2222"],
+        "self_user_ids": [],
     }
 
 

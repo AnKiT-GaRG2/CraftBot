@@ -82,6 +82,7 @@ def test_config_ui_and_persistence(tmp_path):
     assert saved == {
         "self_messages_only": True,
         "auto_reply_contact_ids": ["1111", "2222"],
+        "self_user_ids": [],
     }
     # A new config object (including after restart) sees the saved permission.
     config = load_config("telegram_bot_config.json", TelegramBotConfig)

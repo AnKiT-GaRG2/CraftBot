@@ -12,6 +12,11 @@ def reply_permission_error(input_data: dict) -> dict | None:
     )
 
     origin = current_message_origin.get() or {}
+    from app.telegram_feedback import owner_permission_error
+
+    denied = owner_permission_error(origin)
+    if denied:
+        return denied
     if (
         not origin.get("contact_id") and not origin.get("integration_type")
     ) or origin.get("is_self_message") is True:

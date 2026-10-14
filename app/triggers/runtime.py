@@ -104,6 +104,7 @@ def _compatible_message_origins(base: Trigger, other: Trigger) -> bool:
         "account",
         "is_self_message",
         "auto_reply_allowed",
+        "owner_authenticated",
     )
     return all(left.get(k) == right.get(k) for k in keys)
 
@@ -195,10 +196,12 @@ def _merge_triggers(base: Trigger, extras: list[Trigger]) -> Trigger:
                 "account",
                 "account_alias",
                 "integration_type",
+                "message_id",
             ):
                 base.payload[key] = p.get(key, "")
             base.payload["is_self_message"] = p.get("is_self_message") is True
             base.payload["auto_reply_allowed"] = p.get("auto_reply_allowed") is True
+            base.payload["owner_authenticated"] = p.get("owner_authenticated") is True
         # Work identity, not routing: without these the factory cannot tell
         # which mission this run belonged to, so it can neither close it nor
         # redispatch it (see EXCLUSIVE_SOURCES). Never overwrite the base's
