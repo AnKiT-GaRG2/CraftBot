@@ -414,3 +414,103 @@ def test_owner_can_inspect_agent_apps_through_action_execution(monkeypatch, tmp_
     assert result["projects"] == []
     assert origins[0]["owner_authenticated"] is True
     assert current_message_origin.get() is None
+
+
+@pytest.mark.parametrize(
+    "action_name",
+    [
+        "agent_app_list_projects",
+        "set_telegram_owner_control",
+        "set_telegram_contact_auto_reply",
+        "read_file",
+        "run_shell",
+        "unknown_future_action",
+    ],
+)
+@pytest.mark.parametrize("mixed_batch", [False, True])
+def test_auto_reply_cannot_execute_privileged_tools(action_name, mixed_batch):
+    from app.agent_base import AgentBase, TriggerData
+
+    calls = []
+
+    async def execute(**kwargs):
+        calls.extend(kwargs["actions"])
+        return [{"status": "success", "projects": [{"name": "Private app"}]}]
+
+    agent = SimpleNamespace(
+        action_manager=SimpleNamespace(execute_actions_parallel=execute),
+        _merge_action_outputs=lambda result: result,
+    )
+    origin = {
+        **owner_origin(),
+        "owner_authenticated": False,
+        "is_self_message": False,
+        "auto_reply_allowed": True,
+    }
+    trigger = TriggerData(
+        query="Inspect Agent Apps",
+        session_id="main",
+        contact_id="1111",
+        channel_id="1111",
+        is_self_message=False,
+        payload=origin,
+    )
+    # Spoofed model parameters never establish authority. Even a reply in the
+    # same parallel batch must not execute before the privileged tool is denied.
+    actions = [
+        (
+            SimpleNamespace(name=action_name),
+            {
+                "is_self_message": True,
+                "owner_authenticated": True,
+                "contact_id": "1111",
+                "enabled": True,
+            },
+        )
+    ]
+    if mixed_batch:
+        actions.insert(0, (SimpleNamespace(name="send_telegram_bot_message"), {}))
+    logs = []
+    agent.event_stream_manager = SimpleNamespace(log=lambda **kw: logs.append(kw))
+    result = asyncio.run(
+        AgentBase._execute_actions(agent, actions, trigger, "", "main")
+    )
+    assert calls == []
+    assert result["status"] == "error"
+    assert "owner" in result["message"].lower()
+    assert result["has_errors"] is True and result["run_ends"] is False
+    assert logs[0]["action_name"] == action_name
+    assert get_config("telegram_bot")["self_user_ids"] == []
+
+
+@pytest.mark.parametrize(
+    "approved,action_name,allowed",
+    [
+        (True, "send_telegram_bot_message", True),
+        (True, "send_telegram_text_message", True),
+        (True, "add_action_sets", True),
+        (True, "end_turn", True),
+        (True, "send_message", False),
+        (False, "send_message", True),
+        (False, "send_telegram_bot_message", False),
+        (False, "agent_app_list_projects", False),
+    ],
+)
+def test_guest_action_policy_preserves_replies_and_owner_notifications(
+    approved, action_name, allowed
+):
+    from app.telegram_feedback import telegram_action_permission_error
+
+    origin = {
+        **owner_origin(),
+        "is_self_message": False,
+        "auto_reply_allowed": approved,
+    }
+    assert (telegram_action_permission_error(origin, action_name) is None) is allowed
+    # The guard is specific to Telegram; unrelated integrations are unchanged.
+    assert (
+        telegram_action_permission_error(
+            {**origin, "integration_type": "slack"}, action_name
+        )
+        is None
+    )

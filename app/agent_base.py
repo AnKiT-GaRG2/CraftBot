@@ -1206,11 +1206,35 @@ class AgentBase:
         if not prepared_actions:
             raise ValueError("No valid actions to execute")
 
-        from app.telegram_feedback import owner_permission_error
+        from app.telegram_feedback import (
+            owner_permission_error,
+            telegram_action_permission_error,
+        )
 
         denied = owner_permission_error(trigger_data.payload or {})
         if denied:
             return {**denied, "run_ends": True, "has_errors": True}
+
+        # Check the whole batch before parallel execution, including mixed
+        # reply/tool batches. Model parameters cannot override turn provenance.
+        origin = {
+            **(trigger_data.payload or {}),
+            "is_self_message": trigger_data.is_self_message,
+        }
+        for action, _ in prepared_actions:
+            denied = telegram_action_permission_error(origin, action.name)
+            if denied:
+                logger.warning(denied["message"])
+                if getattr(self, "event_stream_manager", None):
+                    self.event_stream_manager.log(
+                        kind="action_error",
+                        message=denied["message"],
+                        event_type=EventType.ACTION_END,
+                        display_message=f"{action.name} → permission denied",
+                        action_name=action.name,
+                        action_output=denied,
+                    )
+                return {**denied, "run_ends": False, "has_errors": True}
 
         context = reasoning if reasoning else trigger_data.query
 

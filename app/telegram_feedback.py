@@ -37,6 +37,36 @@ def owner_permission_error(origin: dict) -> dict | None:
     }
 
 
+def telegram_action_permission_error(origin: dict, action_name: str) -> dict | None:
+    """Conversation permission never grants tools that inspect or control the host.
+
+    Use trusted turn provenance, not model-supplied action parameters. The caller
+    separately revalidates saved authority for owner turns. New actions default
+    to denied for third-party Telegram messages.
+    """
+    if origin.get("integration_type") != "telegram_bot" or origin.get(
+        "is_self_message"
+    ):
+        return None
+    allowed = {"end_turn", "add_action_sets"}
+    if origin.get("auto_reply_allowed") is True:
+        # Both handlers also recheck saved permission and the reply destination.
+        allowed.update({"send_telegram_bot_message", "send_telegram_text_message"})
+    else:
+        allowed.add("send_message")  # Notify the owner in CraftBot.
+    if action_name in allowed:
+        return None
+    return {
+        "status": "error",
+        "message": (
+            f"Action {action_name} requires authenticated owner control. "
+            "This Telegram contact cannot inspect private state, execute host "
+            "tools or change permissions. Reply within the contact's existing "
+            "conversation permission instead."
+        ),
+    }
+
+
 def format_reply_context(message: dict | None) -> str:
     """Include the quoted message as context, without giving it authority."""
     if not isinstance(message, dict):

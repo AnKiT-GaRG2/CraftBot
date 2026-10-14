@@ -277,7 +277,7 @@ def test_third_party_cannot_inspect_or_change_permissions_in_action_execution(
         is_self_message=False,
         payload={"integration_type": "telegram_bot"},
     )
-    asyncio.run(
+    result = asyncio.run(
         AgentBase._execute_actions(
             agent,
             [(SimpleNamespace(name="set_telegram_contact_auto_reply"), {})],
@@ -286,7 +286,8 @@ def test_third_party_cannot_inspect_or_change_permissions_in_action_execution(
             "main",
         )
     )
-    assert all(result["status"] == "error" for result in captured)
+    assert captured == []
+    assert result["status"] == "error"
     assert get_config("telegram_bot")["auto_reply_contact_ids"] == (
         ["1111"] if approved else []
     )
