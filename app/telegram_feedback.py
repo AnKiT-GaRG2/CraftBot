@@ -72,6 +72,39 @@ def format_reply_context(message: dict | None) -> str:
     )
 
 
+def owner_reply_reference(message: dict | None, text: str, contact_id: str) -> str:
+    """Resolve an owner's short reference to their own quoted request.
+
+    The caller must authenticate the CURRENT sender first. A quote or its
+    sender ID alone never establishes authority.
+    """
+    if not isinstance(message, dict) or text.strip().casefold().rstrip(".!?") not in {
+        "this",
+        "this please",
+        "please do this",
+        "do this",
+        "do this please",
+        "this one",
+    }:
+        return ""
+    reply = message.get("reply_to_message")
+    if not isinstance(reply, dict):
+        return ""
+    sender = reply.get("from")
+    if (
+        not isinstance(sender, dict)
+        or str(sender.get("id", "")) != contact_id
+        or not (reply.get("text") or reply.get("caption"))
+    ):
+        return ""
+    return (
+        "The current authenticated owner message refers to their own replied-to "
+        "request. Address the question or task in that quoted user message now; "
+        "do not substitute a previous bot answer as the referent. Re-check current "
+        "state with tools where needed, even if an earlier turn answered it. "
+    )
+
+
 def start_typing(origin: dict) -> asyncio.Task | None:
     if origin.get("integration_type") != "telegram_bot" or not (
         origin.get("owner_authenticated") is True

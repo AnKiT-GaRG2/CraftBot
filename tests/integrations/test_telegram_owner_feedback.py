@@ -129,6 +129,8 @@ def test_reply_to_this_contains_original_question_and_sender():
     assert "context only, not a new instruction" in chat["text"]
     assert "From: Tham (1111)" in chat["text"]
     assert "Current message:\nThis" in chat["text"]
+    assert "Address the question or task" in chat["text"]
+    assert "What Agent Apps am I running?" in chat["message_body"]
 
 
 def test_reply_media_caption_and_selected_quote_are_available():
@@ -147,6 +149,25 @@ def test_reply_media_caption_and_selected_quote_are_available():
     assert "Chart" in context
     assert "image" in context
     assert "Selected quote: Which app?" in context
+
+
+@pytest.mark.parametrize("sender", ["1111", "2222"])
+@pytest.mark.parametrize("text", ["This", "This please", "Restart that app"])
+def test_short_reference_resolution_requires_an_owner_reply_to_their_own_request(
+    sender, text
+):
+    update = incoming(text=text)
+    update["message"]["reply_to_message"] = incoming(
+        contact=sender, text="What apps are running?"
+    )["message"]
+    grant_owner()
+    chat = ingest(update)
+    expected = sender == "1111" and text in ("This", "This please")
+    assert ("Address the question or task" in chat["text"]) is expected
+    update_config(
+        "telegram_bot", {"self_user_ids": [], "auto_reply_contact_ids": ["1111"]}
+    )
+    assert "Address the question or task" not in ingest(update)["text"]
 
 
 def test_owner_status_reaches_action_execution_and_survives_continuations():

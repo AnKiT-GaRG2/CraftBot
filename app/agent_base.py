@@ -2599,6 +2599,7 @@ class AgentBase:
             auto_reply_allowed = False
             owner_authenticated = False
             reply_context = ""
+            reply_reference = ""
             if integration_type == "telegram_bot":
                 from craftos_integrations import load_config
                 from craftos_integrations.providers.telegram_bot.client import (
@@ -2634,9 +2635,16 @@ class AgentBase:
                     )
                     and not owner_authenticated
                 )
-                from app.telegram_feedback import format_reply_context
+                from app.telegram_feedback import (
+                    format_reply_context,
+                    owner_reply_reference,
+                )
 
                 reply_context = format_reply_context(message)
+                if owner_authenticated:
+                    reply_reference = owner_reply_reference(
+                        message, message_body, contact_id
+                    )
 
             # Multi-account: which connected account received this message
             # (attached by CraftBotEventSink). Replies MUST go out through
@@ -2715,6 +2723,7 @@ class AgentBase:
                     f"this private message as the owner's instruction. Perform "
                     f"the requested work using your tools, including inspecting "
                     f"Agent Apps with agent_app_list_projects when asked. "
+                    f"{reply_reference}"
                     f"Reply with the result using "
                     f"send_telegram_bot_message with chat_id: '{channel_id}'."
                     f"{account_note}"
@@ -2797,7 +2806,7 @@ class AgentBase:
                     "account_alias": account_alias,
                     # Raw body (no instruction wrapper) — surfaced as the
                     # expandable details on the "📩 Incoming …" chat stub.
-                    "message_body": message_body,
+                    "message_body": f"{reply_context}{message_body}",
                 }
             )
 
