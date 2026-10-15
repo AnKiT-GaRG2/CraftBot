@@ -91,8 +91,6 @@ _OUTPUT_SCHEMA = {
 )
 def grep_files(input_data: dict) -> dict:
     """Search files with ripgrep and return the matching lines."""
-    import base64
-    import json
     import os
     import subprocess
     import threading
@@ -161,7 +159,30 @@ def grep_files(input_data: dict) -> dict:
     # a dev checkout and in an installed copy.
     # --no-messages: unreadable files are skipped silently; a bad regex is
     # still reported on stderr.
-    args = [rg, "--no-config", "--json", "--no-messages", "--no-require-git"]
+    args = [rg, "--no-config", "--no-messages", "--no-require-git"]
+    # One line per result: path NUL line number, ':' for a match or '-' for
+    # context, then the text. Not --json: it ignores --max-columns and lists
+    # every occurrence on a matched line, so one minified line could load
+    # megabytes into memory.
+    args += [
+        "--color=never",
+        "--no-heading",
+        "--with-filename",
+        "--line-number",
+        "--null",
+        "--no-context-separator",
+    ]
+    # rg trims long lines itself. A UTF-8 character is at most 4 bytes and rg
+    # counts the line ending, so any line it trims is still longer than
+    # MAX_LINE_CHARS and its "[... omitted]" marker falls in the part cut
+    # below.
+    args += [f"--max-columns={4 * MAX_LINE_CHARS + 2}", "--max-columns-preview"]
+    # No file can contribute more than `limit` matches.
+    args.append(f"--max-count={limit}")
+    if not root_is_dir:
+        # A file named directly is searched even when it looks binary;
+        # otherwise rg prints only a "binary file matches" notice for it.
+        args.append("--text")
     if ignore_case:
         args.append("--ignore-case")
     if context:
@@ -170,15 +191,27 @@ def grep_files(input_data: dict) -> dict:
         args += ["--glob", glob]
     args += ["--regexp", pattern, "--", root]
 
-    def text_of(field):
-        # rg sends a line that is not valid UTF-8 as base64 "bytes".
-        if "text" in field:
-            return field["text"]
-        return base64.b64decode(field.get("bytes", "")).decode("utf-8", "replace")
+    def display(path):
+        if not root_is_dir:
+            return os.path.basename(path)
+        normalized = os.path.normpath(path)
+        try:
+            relative = os.path.relpath(normalized, root)
+        except ValueError:  # another drive on Windows
+            return normalized.replace(os.sep, "/")
+        if relative.startswith(".."):
+            return normalized.replace(os.sep, "/")
+        return relative.replace(os.sep, "/")
 
-    # (path, line number, text, is_match) in rg's output order.
-    records = []
-    match_count = 0
+    # Content is built while rg's output is read, so memory stays within
+    # MAX_CONTENT_CHARS however many matches a search turns up.
+    lines = []
+    used = 0
+    shown_matches = 0
+    shown_files = set()
+    lines_cut = 0
+    capped = False
+    previous = None
     limit_line = None
     stderr_parts = []
     session_id = input_data.get("_session_id") or ""
@@ -204,30 +237,44 @@ def grep_files(input_data: dict) -> dict:
     drain.start()
     try:
         for raw in proc.stdout:
-            record = json.loads(raw)
-            kind = record.get("type")
-            if kind not in ("match", "context"):
-                if limit_line is not None and kind in ("begin", "end"):
-                    break
+            path_bytes, nul, rest = raw.partition(b"\0")
+            digits = len(rest) - len(rest.lstrip(b"0123456789"))
+            # rg's notices, such as a binary file it stopped searching after a
+            # match, carry no NUL and no line number.
+            if not nul or not digits:
                 continue
-            data = record["data"]
-            line_no = data["line_number"]
+            path = path_bytes.decode("utf-8", "replace")
+            line_no = int(rest[:digits])
+            is_match = rest[digits : digits + 1] == b":"
             if limit_line is not None:
                 # Past the limit, keep only the trailing context of the last
                 # match, never the lead-in of the next one.
-                if kind == "match" or line_no > limit_line + context:
+                if is_match or path != previous[0] or line_no > limit_line + context:
                     break
-            records.append(
-                (
-                    text_of(data["path"]),
-                    line_no,
-                    text_of(data["lines"]).rstrip("\r\n"),
-                    kind == "match",
-                )
-            )
-            if kind == "match":
-                match_count += 1
-                if match_count >= limit:
+            text = rest[digits + 1 :].decode("utf-8", "replace").rstrip("\r\n")
+            block = []
+            if (
+                context
+                and previous is not None
+                and (previous[0] != path or line_no != previous[1] + 1)
+            ):
+                block.append("--")
+            if len(text) > MAX_LINE_CHARS:
+                text = text[:MAX_LINE_CHARS] + " [line cut]"
+                lines_cut += 1
+            sep = ":" if is_match else "-"
+            block.append(f"{display(path)}{sep}{line_no}{sep} {text}")
+            size = sum(len(b) + 1 for b in block)
+            if used + size > MAX_CONTENT_CHARS:
+                capped = True
+                break
+            lines.extend(block)
+            used += size
+            previous = (path, line_no)
+            if is_match:
+                shown_matches += 1
+                shown_files.add(path)
+                if shown_matches >= limit:
                     limit_line = line_no
                     if not context:
                         break
@@ -248,13 +295,13 @@ def grep_files(input_data: dict) -> dict:
 
     # rg exits 2 on any error, including one unreadable file in a tree that
     # otherwise matched; it is only a failure when nothing usable came back.
-    if not records and not limit_hit and returncode not in (0, 1):
+    if not lines and not limit_hit and returncode not in (0, 1):
         return make_result(
             "error",
             f"Search failed: {stderr_text or f'ripgrep exited with code {returncode}'}",
         )
 
-    if not records:
+    if not lines:
         if root_is_dir:
             message = (
                 f"No matches under {root}. Searching a folder skips files ignored "
@@ -263,49 +310,6 @@ def grep_files(input_data: dict) -> dict:
         else:
             message = f"No matches in {root}."
         return make_result("success", message)
-
-    def display(path):
-        if not root_is_dir:
-            return os.path.basename(path)
-        normalized = os.path.normpath(path)
-        try:
-            relative = os.path.relpath(normalized, root)
-        except ValueError:  # another drive on Windows
-            return normalized.replace(os.sep, "/")
-        if relative.startswith(".."):
-            return normalized.replace(os.sep, "/")
-        return relative.replace(os.sep, "/")
-
-    lines = []
-    used = 0
-    shown_matches = 0
-    shown_files = set()
-    lines_cut = 0
-    capped = False
-    previous = None
-    for path, line_no, text, is_match in records:
-        block = []
-        if (
-            context
-            and previous is not None
-            and (previous[0] != path or line_no != previous[1] + 1)
-        ):
-            block.append("--")
-        if len(text) > MAX_LINE_CHARS:
-            text = text[:MAX_LINE_CHARS] + " [line cut]"
-            lines_cut += 1
-        sep = ":" if is_match else "-"
-        block.append(f"{display(path)}{sep}{line_no}{sep} {text}")
-        size = sum(len(b) + 1 for b in block)
-        if used + size > MAX_CONTENT_CHARS:
-            capped = True
-            break
-        lines.extend(block)
-        used += size
-        previous = (path, line_no)
-        if is_match:
-            shown_matches += 1
-            shown_files.add(path)
 
     where = f"under {root}; paths are relative to it" if root_is_dir else f"in {root}"
     notes = [

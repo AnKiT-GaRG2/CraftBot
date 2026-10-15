@@ -4,6 +4,8 @@ These drive the real bundled rg binary; they skip only on a platform CraftBot
 bundles no ripgrep for.
 """
 
+import tracemalloc
+
 import pytest
 
 from app import ripgrep_runtime
@@ -128,6 +130,69 @@ def test_long_lines_are_cut(tmp_path):
     assert line.endswith("[line cut]")
     assert len(line) < 600
     assert "cut to 500 characters" in res["message"]
+
+
+def _peak_bytes(call):
+    tracemalloc.start()
+    try:
+        result = call()
+        return result, tracemalloc.get_traced_memory()[1]
+    finally:
+        tracemalloc.stop()
+
+
+def test_a_minified_line_with_many_occurrences_stays_small(tmp_path):
+    # 250,000 occurrences on one line: rg's --json described each of them and
+    # took over 100 MB to parse.
+    _write(tmp_path / "bundle.min.js", "a=1;" * 250_000 + "\n")
+
+    res, peak = _peak_bytes(
+        lambda: grep_files({"pattern": "a", "path": str(tmp_path), "limit": 1})
+    )
+
+    assert res["content"].startswith("bundle.min.js:1: a=1;")
+    assert res["content"].endswith("[line cut]")
+    assert peak < 2_000_000
+
+
+def test_content_budget_applies_while_reading(tmp_path):
+    _write(tmp_path / "log.txt", "hit\n" * 300_000)
+
+    res, peak = _peak_bytes(
+        lambda: grep_files(
+            {"pattern": "hit", "path": str(tmp_path), "limit": 1_000_000}
+        )
+    )
+
+    assert res["truncated"] is True
+    assert "Output capped at 40000 characters" in res["message"]
+    assert len(res["content"]) <= 40000
+    assert peak < 2_000_000
+
+
+def test_a_line_of_exactly_500_wide_characters_is_not_cut(tmp_path):
+    # 2,000 bytes plus a CRLF ending: rg counts the ending against its byte
+    # cap, so the cap leaves room for it.
+    line = "\U0001f600" * 500
+    target = tmp_path / "wide.txt"
+    target.write_bytes((line + "\r\n").encode("utf-8"))
+
+    res = grep_files({"pattern": ".", "path": str(target)})
+
+    assert res["content"] == f"wide.txt:1: {line}"
+    assert "cut to 500 characters" not in res["message"]
+
+
+def test_a_binary_file_named_directly_is_still_searched(tmp_path):
+    target = tmp_path / "data.bin"
+    target.write_bytes(b"needle one\n\x00\nneedle two\n")
+
+    res = grep_files({"pattern": "needle", "path": str(target)})
+
+    assert res["content"].splitlines() == [
+        "data.bin:1: needle one",
+        "data.bin:3: needle two",
+    ]
 
 
 def test_no_match_explains_what_a_folder_search_skips(tmp_path):
