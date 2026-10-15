@@ -191,6 +191,7 @@ class EventStream:
                 f"Summarized event stream, {folded_tokens} tokens were folded "
                 "into summary"
             )
+        line += " Detail from those events is gone; read your NOTE.md if you need it."
         ev = Event(
             message=line,
             kind="summarization",

@@ -1,5 +1,5 @@
 ---
-version: 9
+version: 10
 purpose: agent operations manual
 ---
 
@@ -280,11 +280,11 @@ Rules:
 ### Output destinations
 
 - Files the user should keep across sessions → `agent_file_system/workspace/`
-- Working notes that must survive event-stream summarization (plans, intermediate results, decisions) → `agent_file_system/workspace/sessions/{session_id}/NOTE.md` (a per-session scratchpad you own, seeded automatically)
+- Anything you must not lose when the event stream is summarized → `agent_file_system/workspace/sessions/{session_id}/NOTE.md` (your per-session note, created automatically)
 - Drafts, sketches, intermediate state → `agent_file_system/workspace/sessions/{session_id}/` (persists for the session's life; removed when the session is deleted)
-- Mission-scale, multi-run initiatives → `agent_file_system/workspace/missions/<mission_name>/INDEX.md`
+- Work that spans multiple sessions → `agent_file_system/workspace/`
 
-See `## Workspace` for the mission template and scan-on-start protocol.
+See `## Workspace` for the folder layout and lifecycle rules.
 
 ### Common mistakes to avoid
 
@@ -845,7 +845,6 @@ agent_file_system/
 ├── ENTITIES.md               Entity-graph registry               DO NOT EDIT
 ├── PROACTIVE.md              Recurring tasks + Goals/Plan/Status
 ├── GLOBAL_AGENT_APP.md       Global Agent App design rules
-├── MISSION_INDEX_TEMPLATE.md Template for mission INDEX.md files
 └── workspace/                Sandbox for task outputs (see ## Workspace)
 ```
 
@@ -922,9 +921,10 @@ longer a global EVENT.md at the `agent_file_system/` root.
 - Filter: events of kind `action_start`, `action_end`, `todos`, `error`, `waiting_for_user`, `gui_action`, `agent reasoning`, `screen_description`, `relevant_memories` are NOT staged.
 - Skip flag: during memory-processing runs, `set_skip_unprocessed_logging(True)` prevents the run's own events from looping back. Reset automatically at run end.
 
-**NOTE.md** — YOUR scratchpad for this session. You may freely read AND write it (the only per-session file you may write).
-- Purpose: record plans, intermediate results, key facts, decisions, and running state so they survive event-stream summarization (NOTE.md is never summarized).
-- Use it whenever you have working state you must not lose across turns. It persists for the life of the session and is removed only when the session is deleted.
+**NOTE.md**: your note for this session. You may freely read AND write it (the only per-session file you may write).
+- Older events in the event stream get summarized and lose detail. Keep anything you must not lose in NOTE.md, and read it back when you need it.
+- Every summarization leaves a notice in the event stream. Detail from the summarized events is gone; read NOTE.md if you need it.
+- It persists for the life of the session and is removed only when the session is deleted.
 
 To review past dialogue or past run outcomes, grep THIS session's EVENT.md or use `memory_search`.
 
@@ -940,12 +940,6 @@ To review past dialogue or past run outcomes, grep THIS session's EVENT.md or us
 - Write access: user (primarily). You only when the user supplies a new universal rule with confirmation.
 - Read pattern: before creating any Agent App project. See `## Agent App`.
 - Sections: Design Preferences (colors, theme, font, border radius, spacing), Always Enforced rules, Optional rules, Custom rules.
-
-### MISSION_INDEX_TEMPLATE.md
-- Purpose: template for `workspace/missions/<name>/INDEX.md`. See `## Workspace`.
-- Write access: static template. DO NOT edit.
-- Read pattern: when starting a mission, copy this template into the mission directory and fill it in.
-- Fields: Goal, Status, Key Findings, What's Been Tried, Next Steps, Resources & References, Constraints & Notes.
 
 ### Agent App projects (workspace/agent_app/)
 
@@ -999,21 +993,17 @@ chroma_db_memory/                     ChromaDB index for memory_search
 
 ## Workspace
 
-`agent_file_system/workspace/` is your sandbox for task output. Three subdirectories with distinct lifecycles:
+`agent_file_system/workspace/` is your sandbox for task output, and the place for work that spans multiple sessions. Two subdirectories with distinct lifecycles:
 
 ```
 agent_file_system/workspace/
-├── <files at root>           Persistent outputs the user should keep
+├── <files at root>           Persistent outputs and multi-session work
 ├── sessions/
 │   └── {session_id}/         Per-session scratch directory. Persists for the
 │       │                     session's life; removed when the session is deleted.
 │       ├── EVENT.md          This session's full event log        DO NOT EDIT
 │       ├── EVENT_UNPROCESSED.md  This session's memory buffer      DO NOT EDIT
-│       └── NOTE.md           Your scratchpad (read AND write it)
-├── missions/
-│   └── <mission_name>/       Multi-run initiative. Persists indefinitely.
-│       ├── INDEX.md          Required (template at MISSION_INDEX_TEMPLATE.md)
-│       └── <mission files>
+│       └── NOTE.md           Your note (read AND write it)
 └── agent_app/
     └── <name>_<hash>/        Agent App projects. See ## File System.
 ```
@@ -1024,8 +1014,8 @@ agent_file_system/workspace/
 Type of file                                      → Destination
 final document the user should keep               → workspace/<filename>
 draft, sketch, intermediate state, scratch        → workspace/sessions/{session_id}/<filename>
-working notes that must survive summarization     → workspace/sessions/{session_id}/NOTE.md
-mission deliverable (multi-run initiative)        → workspace/missions/<mission_name>/<filename>
+anything you must not lose to summarization       → workspace/sessions/{session_id}/NOTE.md
+work that spans multiple sessions                 → workspace/<filename>
 Agent App project file                            → workspace/agent_app/<name>_<hash>/...
 ```
 
@@ -1033,7 +1023,6 @@ Agent App project file                            → workspace/agent_app/<name>
 
 - `workspace/` (root): never auto-cleaned. Anything you save here persists until the user deletes it.
 - `workspace/sessions/{session_id}/`: created automatically when a session is created. Removed only when the session is deleted — NOT cleaned between runs, so scratch from earlier runs of the same session is still there.
-- `workspace/missions/<name>/`: never auto-cleaned. The mission's `INDEX.md` is what future-you reads to restore context.
 - `workspace/agent_app/<name>_<hash>/`: managed via the `agent_app` actions. Do not rename or delete by hand. See `## Agent App`.
 
 ### Path discipline
@@ -1043,50 +1032,9 @@ Agent App project file                            → workspace/agent_app/<name>
 - Filenames: lowercase, snake_case or kebab-case, no spaces. Example: `tsla_analysis_2026_05_04.pdf`.
 - For session-scoped files use the actual `session_id`, not a guess.
 
-### Missions: when to create one
+### Missions (obsolete since V1.4.4)
 
-Create `workspace/missions/<mission_name>/INDEX.md` when ANY of:
-- Work spans multiple sessions or days.
-- Plan has more than ~10 todos.
-- User uses words like "project", "initiative", "ongoing", "campaign", "phase".
-- Output of this task will feed into a future task.
-
-If the answer is "no" to all, do NOT create a mission. A single substantial run is enough.
-
-### Missions: scan-on-start
-
-At the start of every substantial run:
-```
-1. list_folder agent_file_system/workspace/missions/
-2. If any directory name looks relevant to the user's request:
-     read_file agent_file_system/workspace/missions/<name>/INDEX.md
-3. Decide:
-     - Resume an existing mission              → continue updating its INDEX.md
-     - Create a new mission                    → copy MISSION_INDEX_TEMPLATE.md
-     - One-off piece of work, not a mission    → no mission directory
-```
-
-This is non-optional. Skipping the scan causes duplicate work and lost context.
-
-### Mission INDEX.md fields
-
-Template lives at [agent_file_system/MISSION_INDEX_TEMPLATE.md](agent_file_system/MISSION_INDEX_TEMPLATE.md). Required fields:
-
-- **Goal**: what "done" looks like, with concrete deliverables.
-- **Status**: one of `Not started | In progress | Blocked | Completed | Abandoned`. Plus last task summary, last updated date.
-- **Key Findings**: distilled discoveries. The most important section. This is what future-you reads to restore context. Keep it tight and current.
-- **What's Been Tried**: approaches plus outcomes. Prevents repeating failed attempts.
-- **Next Steps**: concrete actions a fresh task can pick up immediately. Be specific enough that no further investigation is needed to start.
-- **Resources & References**: links, file paths, tools, contacts.
-- **Constraints & Notes**: deadlines, user preferences, environmental limits.
-
-### Mission INDEX.md update cadence
-
-- At task start (resuming a mission): read INDEX.md fully. Add a `Status` line for the new task.
-- During the task: append to `Key Findings` whenever you learn something durable. Append to `What's Been Tried` after any completed approach (success or failure).
-- Before delivering: update `Status`, write `Next Steps` so a fresh run can pick up immediately. If the mission is done, mark `Status: Completed`.
-
-A mission with stale `Next Steps` is worse than no mission. Always leave it actionable.
+Missions are obsolete since V1.4.4: `workspace/missions/`, mission `INDEX.md` files, and `MISSION_INDEX_TEMPLATE.md`. Do not create or scan missions. Keep work that spans multiple sessions in `workspace/`. A `workspace/missions/` folder left by an older version is ordinary workspace content.
 
 ### What does NOT belong in workspace/
 
@@ -4399,9 +4347,7 @@ Document / file generation standards                    FORMAT.md         confir
 Agent App design rules                                  GLOBAL_AGENT_APP  ask if non-trivial
   (palette, components, responsive rules)               .md
 
-Per-mission state, multi-task continuity                workspace/        no consent needed
-                                                        missions/<n>/     (it's mission-internal)
-                                                        INDEX.md
+Work that spans multiple sessions                       workspace/        no consent needed
 
 Recurring or scheduled task definitions                 PROACTIVE.md      via recurring_* / schedule_*
                                                         (or scheduler_    actions, NOT manual edit
@@ -4427,7 +4373,7 @@ If you can't pick one cleanly, the change isn't well-scoped yet. Ask the user be
 **When NOT to edit:**
 - During a task that isn't about self-improvement. Side-quest edits get lost in unrelated tasks and bloat the manual.
 - To record one-off facts about the current user. Those go in USER.md.
-- To record project-specific findings. Those go in `workspace/missions/<name>/INDEX.md`.
+- To record project-specific findings. Those go in `workspace/`.
 - To document something the user might change tomorrow. Stable rules only.
 - After your first encounter with a friction. Wait for the second or third. Premature additions are noise.
 
@@ -4500,7 +4446,7 @@ If you can't pick one cleanly, the change isn't well-scoped yet. Ask the user be
 **Hard rules:**
 - ONE-LINE CONFIRM is the default. Don't over-confirm; the user already told you the preference.
 - Never silently change USER.md. The user must see the diff or your description.
-- Don't put project-specific details here. Those go in `workspace/missions/<name>/INDEX.md`.
+- Don't put project-specific details here. Those go in `workspace/`.
 - Don't put SECRETS here (passwords, tokens, credentials). USER.md is indexed by memory_search and surfaces in many contexts.
 - Don't put one-off facts here. "I'm working on X today" is one-off. "I always work on X-class problems" is durable.
 
@@ -4602,7 +4548,7 @@ If you don't remember the previous content (e.g., it's been many turns), grep EV
 ```
 - A scratch pad. Use workspace/sessions/{session_id}/ for that.
 - A todo list. Use update_todos.
-- A mission record. Use workspace/missions/<name>/INDEX.md.
+- A record of ongoing work. Use workspace/.
 - A diary. Use EVENT.md (the system writes it; you don't).
 - A memory store. Use the memory pipeline + memory_search.
 - A knowledge base for arbitrary user data. Anything that isn't profile,
@@ -4612,7 +4558,7 @@ If you don't remember the previous content (e.g., it's been many turns), grep EV
 ### Anti-patterns
 
 - Editing AGENT.md for things that aren't operational rules (project state, one-off opinions, user-specific facts).
-- Editing USER.md for things that aren't user profile (mission state, one-off requests).
+- Editing USER.md for things that aren't user profile (project state, one-off requests).
 - Editing SOUL.md without quote-back-and-confirm.
 - Forgetting the AGENT.md template sync. The template should never drift.
 - Adding a new section to USER.md without user consent. Stick to the standard sections.
@@ -4677,8 +4623,6 @@ mcp_<server_name>         action set name registered when an MCP server connects
 memory_search             hybrid vector+BM25+graph action over indexed agent_file_system files  ## Memory
 MemoryManager             singleton for memory indexing + retrieval                        ## Memory
 MEMORY.md                 distilled long-term memory; read via memory_search only          ## Memory / ## File System
-MISSION_INDEX_TEMPLATE.md template for workspace/missions/<name>/INDEX.md                  ## File System / ## Workspace
-mission                   multi-run initiative in workspace/missions/                      ## Workspace
 MODEL_REGISTRY            agent_core registry mapping providers to default models          ## Models
 onboarding                first-run setup flow (hard wizard + soft interview)              ## Onboarding Context
 outcome_history           per-task list of recent execution outcomes in PROACTIVE.md       ## Proactive
