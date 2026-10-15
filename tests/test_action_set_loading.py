@@ -32,6 +32,10 @@ _REGISTRY = [
         action_sets=["gmail_mail", "gmail"],
     ),
     ActionMetadata(name="list_gmail", action_sets=["gmail_mail", "gmail"]),
+    ActionMetadata(name="get_gmail_settings", action_sets=["gmail_admin"]),
+    ActionMetadata(name="list_github_workflows", action_sets=["github_workflows"]),
+    ActionMetadata(name="list_stripe_disputes", action_sets=["stripe_disputes"]),
+    ActionMetadata(name="add_jira_attachment", action_sets=["jira_attachments"]),
     ActionMetadata(name="read_pdf", action_sets=["document_processing"]),
 ]
 
@@ -165,6 +169,40 @@ def test_a_set_without_an_integration_has_no_guidance(loader):
     (event,) = _schema_events(stream)
     assert event.schema_actions == ["read_pdf"]
     assert "###" not in event.message
+
+
+@pytest.mark.parametrize(
+    "set_name,action_name,provider_id",
+    [
+        ("github_workflows", "list_github_workflows", "github"),
+        ("stripe_disputes", "list_stripe_disputes", "stripe"),
+        ("jira_attachments", "add_jira_attachment", "jira"),
+    ],
+)
+def test_subgroup_only_actions_deliver_provider_guidance(
+    loader, set_name, action_name, provider_id
+):
+    iai, session, stream = loader
+    result = iai.load_action_sets([set_name], session_id=session.id)
+
+    assert result["success"] is True
+    assert result["actions"] == [action_name]
+    (event,) = _schema_events(stream)
+    assert event.schema_actions == [action_name]
+    assert f"### {provider_id}\n" in event.message
+
+
+def test_new_subgroup_schemas_keep_guidance_after_an_umbrella_load(loader):
+    iai, session, stream = loader
+    iai.load_action_sets(["gmail"], session_id=session.id)
+    result = iai.load_action_sets(["gmail_admin"], session_id=session.id)
+
+    assert result["actions"] == ["get_gmail_settings"]
+    first, second = _schema_events(stream)
+    assert first.schema_actions == ["send_gmail", "list_gmail"]
+    assert second.schema_actions == ["get_gmail_settings"]
+    # The first event can be dropped by a fold while this subgroup is in use.
+    assert "### gmail\n" in second.message
 
 
 def test_loading_twice_is_a_no_op(loader):

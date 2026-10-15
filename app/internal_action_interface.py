@@ -778,7 +778,7 @@ class InternalActionInterface:
         from app.action.action_set import action_set_manager
         from app.data.action.integrations._integration_essentials import (
             get_essentials_for_integrations,
-            integration_ids,
+            integration_ids_for_action_sets,
         )
 
         sid = session_id or cls._get_current_session_id()
@@ -823,7 +823,7 @@ class InternalActionInterface:
             )
             return result
 
-        integrations = integration_ids().intersection(
+        integrations = integration_ids_for_action_sets(
             set_name for meta in metadata for set_name in meta.action_sets
         )
         guidance = get_essentials_for_integrations(integrations)

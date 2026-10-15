@@ -4,10 +4,10 @@
 When an integration's actions are loaded into a session (add_action_sets, a
 skill's recommended sets, or a run's declared sets), the schemas arrive in the
 event stream together with that integration's workflow guidance, so the model
-has the rules in context before its first call. Which integrations get
-guidance is structural: an integration action carries its integration id in
-its action_sets (["gmail_mail", "gmail"] -> gmail), and only ids that name a
-provider directory count.
+has the rules in context before its first call. Action sets name either a
+provider or one of its underscore-separated subgroups ("github_workflows"
+-> github). Only ids that name a provider directory count; the longest
+matching provider id owns a subgroup.
 
 Guidance sources, in order:
   1. ``craftos_integrations/providers/<id>/GUIDANCE.md`` — multi-account
@@ -40,6 +40,25 @@ def integration_ids() -> Set[str]:
                 continue
             if child.is_dir():
                 ids.add(name)
+    return ids
+
+
+def integration_ids_for_action_sets(set_names: Iterable[str]) -> Set[str]:
+    """Resolve provider and subgroup sets to their owning provider ids.
+
+    Match whole ids before stripping underscore-separated subgroup suffixes,
+    so google_calendar_admin belongs to google_calendar even if a provider
+    named google also exists. Unrelated and non-integration sets are ignored.
+    """
+    providers = integration_ids()
+    ids: Set[str] = set()
+    for set_name in set_names:
+        candidate = set_name
+        while candidate:
+            if candidate in providers:
+                ids.add(candidate)
+                break
+            candidate = candidate.rpartition("_")[0]
     return ids
 
 
