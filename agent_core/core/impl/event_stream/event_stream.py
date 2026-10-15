@@ -18,7 +18,7 @@ from datetime import datetime, timezone
 import re
 import time
 from pathlib import Path
-from typing import List, Optional, Tuple
+from typing import List, Optional, Set, Tuple
 from agent_core.core.event_stream.event import Event, EventRecord, EventType
 from agent_core.core.protocols.llm import LLMInterfaceProtocol
 from agent_core.core.prompts import EVENT_STREAM_SUMMARIZATION_PROMPT
@@ -203,6 +203,28 @@ class EventStream:
         self.tail_events.append(rec)
         self._total_tokens += get_cached_token_count(rec)
 
+    def _drop_schemas(self, dropped: List[EventRecord]) -> None:
+        """Account for action-schema events a fold removed and tell the agent
+        which schemas left its context. INTERNAL: the agent needs to know it
+        must reload them; the user's chat does not. The caller has already
+        removed the records from tail_events and holds the lock."""
+        if not dropped:
+            return
+        self._total_tokens -= sum(get_cached_token_count(r) for r in dropped)
+        names = [name for r in dropped for name in (r.event.schema_actions or ())]
+        ev = Event(
+            message=(
+                "These action schemas are no longer in context; call "
+                f"add_action_sets to see them again: {', '.join(names)}."
+            ),
+            kind="action_schemas_dropped",
+            severity="INFO",
+            event_type=EventType.INTERNAL,
+        )
+        rec = EventRecord(event=ev)
+        self.tail_events.append(rec)
+        self._total_tokens += get_cached_token_count(rec)
+
     def _maybe_push_datetime(self) -> None:
         """Push a fresh datetime marker on the first event and then at most once
         every DATETIME_REFRESH_SECONDS, so the stream always carries a recent
@@ -233,6 +255,7 @@ class EventStream:
         platform: Optional[str] = None,
         continue_work: Optional[bool] = None,
         question: Optional[dict] = None,
+        schema_actions: Optional[List[str]] = None,
     ) -> int:
         """
         Append a new event to the stream and trigger summarization if needed.
@@ -268,13 +291,20 @@ class EventStream:
             question: For AGENT_MESSAGE events: suggested-response payload
                 (``{"options": [...], "allow_free_text": bool}``) when the
                 message is a question the UI should pin above the composer.
+            schema_actions: For ACTION_SCHEMAS events: the action names whose
+                schemas ``message`` carries (drives the fold rule).
 
         Returns:
             The zero-based index of the event within ``tail_events``.
         """
         if severity not in SEVERITIES:
             severity = "INFO"
-        msg = self._externalize_message(message.strip(), action_name=action_name)
+        if event_type is EventType.ACTION_SCHEMAS:
+            # Schemas are only useful verbatim: a pointer would make the agent
+            # read the registry back through read_file before every call.
+            msg = message.strip()
+        else:
+            msg = self._externalize_message(message.strip(), action_name=action_name)
         display = display_message.strip() if display_message is not None else None
         ev = Event(
             message=msg,
@@ -290,6 +320,7 @@ class EventStream:
             platform=platform,
             continue_work=continue_work,
             question=question,
+            schema_actions=schema_actions,
         )
         rec = EventRecord(event=ev)
 
@@ -435,6 +466,9 @@ class EventStream:
             message = rec.event.message
             if len(message) <= MAX_EVENT_INLINE_CHARS:
                 continue
+            if rec.event.event_type is EventType.ACTION_SCHEMAS:
+                # Kept verbatim on purpose; summarize_by_LLM decides its fate.
+                continue
             pointer = self._externalize_message(
                 message, action_name=rec.event.action_name, force=True
             )
@@ -485,13 +519,39 @@ class EventStream:
             # Nothing old enough to summarize
             return
 
-        # Pull protected events (e.g. requirements) out of the region being
-        # summarized — they stay verbatim in the tail and are never collapsed.
+        # Split the region being folded:
+        # - protected events (e.g. requirements) stay verbatim at the front of
+        #   the surviving tail, as do action schemas whose actions the kept
+        #   tail still calls (the agent is mid-use; folding them would make it
+        #   load them again next turn);
+        # - every other action schema is dropped without a summary: it is a
+        #   copy of the registry, and add_action_sets brings it back on demand;
+        # - the rest is the chunk the LLM summarizes.
         region = list(self.tail_events[:cutoff])
-        protected = [r for r in region if r.event.kind in PROTECTED_SUMMARY_KINDS]
-        chunk = [r for r in region if r.event.kind not in PROTECTED_SUMMARY_KINDS]
+        in_use = {
+            r.event.action_name
+            for r in self.tail_events[cutoff:]
+            if r.event.action_name
+        }
+        protected: List[EventRecord] = []
+        dropped_schemas: List[EventRecord] = []
+        chunk: List[EventRecord] = []
+        for r in region:
+            if r.event.kind in PROTECTED_SUMMARY_KINDS:
+                protected.append(r)
+            elif r.event.event_type is EventType.ACTION_SCHEMAS:
+                if in_use.intersection(r.event.schema_actions or ()):
+                    protected.append(r)
+                else:
+                    dropped_schemas.append(r)
+            else:
+                chunk.append(r)
         if not chunk:
-            # Everything old enough to summarize is protected — nothing to collapse.
+            if dropped_schemas:
+                self.tail_events = protected + self.tail_events[cutoff:]
+                self._drop_schemas(dropped_schemas)
+                self._session_sync_points.clear()
+            # Everything else old enough to summarize is protected.
             return
 
         chunk_tokens = sum(get_cached_token_count(r) for r in chunk)
@@ -514,6 +574,7 @@ class EventStream:
                 folded_tokens=chunk_tokens,
                 summary=None,
             )
+            self._drop_schemas(dropped_schemas)
             self._session_sync_points.clear()
             return
 
@@ -580,6 +641,7 @@ class EventStream:
                 folded_tokens=removed_tokens,
                 summary=new_summary,
             )
+            self._drop_schemas(dropped_schemas)
 
             # Reset all session sync points - event indices are now invalid
             self._session_sync_points.clear()
@@ -605,7 +667,18 @@ class EventStream:
                 folded_tokens=removed_tokens,
                 summary=None,
             )
+            self._drop_schemas(dropped_schemas)
             self._session_sync_points.clear()
+
+    def actions_with_schemas(self) -> Set[str]:
+        """Names of the actions whose schemas are in the live tail."""
+        with self._lock:
+            return {
+                name
+                for r in self.tail_events
+                if r.event.event_type is EventType.ACTION_SCHEMAS
+                for name in (r.event.schema_actions or ())
+            }
 
     # ───────────────────── utilities ─────────────────────
 

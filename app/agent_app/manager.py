@@ -404,7 +404,6 @@ class AgentAppManager:
             session_type=SessionType.AGENT_APP,
             title=project.name,
             session_id=project.session_id or f"agentapp_{project.id}",
-            action_sets=["file_operations", "code_execution", "agent_app"],
             selected_skills=[],
             agent_app_project_id=project.id,
         )

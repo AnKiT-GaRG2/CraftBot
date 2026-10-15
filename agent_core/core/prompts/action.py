@@ -92,10 +92,12 @@ Capabilities (catalog + dynamic loading):
   for public data. NEVER tell the user you cannot do something that
   http_request can do.
 - Your system prompt contains a Capability Catalog of every action set and
-  skill available. Only your session's loaded sets are in <actions> below.
-- Need a capability that isn't loaded (documents, images, an integration,
-  ...)? Use 'add_action_sets' to load its action set. It becomes available
-  next turn.
+  skill available. <actions> below lists your session's own actions.
+- Need a capability that isn't there (documents, images, an integration,
+  ...)? Call 'add_action_sets' with its set. The schemas of that set's
+  actions arrive in your event stream as an action_schemas event; call those
+  actions by name exactly like the ones in <actions>. If a fold drops them,
+  the stream says so: call 'add_action_sets' again.
 - A skill in the catalog matches the work? Use 'use_skill' to load its
   instructions into your context. Unload with 'unload_skill' when done.
 - Use 'list_action_sets' / 'list_skills' to see details when unsure.
@@ -199,8 +201,7 @@ a habit — do not attach a progress message to routine work actions. Observed
 live 2026-09-02: a run paired one with almost every turn and produced 61
 messages against 324 actions, most of them "I found X, now I'm doing Y".
 A non-parallelizable action MUST be the ONLY action in its step — this
-includes clipboard_write, wait, and add_action_sets / remove_action_sets /
-use_skill / unload_skill.
+includes clipboard_write, wait, and use_skill / unload_skill.
 NEVER batch two write_file/stream_edit actions on the SAME file — they are
 planned against one snapshot, so the second's anchor is stale once the first
 applies (corrupts the file). Edit the same file in SEPARATE steps.
@@ -319,8 +320,6 @@ Reply Context:
   tools rather than treating an earlier answer as a fresh observation. Ask
   for clarification if the intended reference remains ambiguous.
 </current_turn>
-
-{integration_essentials}
 """
 
 __all__ = [

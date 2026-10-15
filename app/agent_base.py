@@ -896,16 +896,18 @@ class AgentBase:
         Special-workflow runs (memory, heartbeat, planners, onboarding,
         skill creation) temporarily need a dedicated skill. They are loaded
         at run start and unloaded when the run ends, so the main session's
-        prompt doesn't accumulate every background skill permanently.
+        prompt doesn't accumulate every background skill permanently. The
+        run's action sets are delivered as schemas into the event stream,
+        the same read add_action_sets does, so they never touch <actions>.
         """
         skills = payload.get("workflow_skills") or []
         sets = payload.get("workflow_action_sets") or []
-        if sets:
-            self.session_manager.add_action_sets(session.id, sets)
         for skill_name in skills:
             self.session_manager.add_skill(session.id, skill_name)
-        if skills or sets:
+        if skills:
             self._invalidate_session_caches(session.id)
+        if sets:
+            InternalActionInterface.load_action_sets(sets, session_id=session.id)
 
     def _remove_workflow_capabilities(self, session: Session, payload: dict) -> None:
         """Unload a run's workflow skills when the run ends."""
@@ -3435,8 +3437,8 @@ class AgentBase:
         3. Discovers tools from each connected server
         4. Registers tools as actions in the ActionRegistry
 
-        MCP tools become available as action sets (e.g., mcp_filesystem) that
-        sessions can load via add_action_sets.
+        MCP tools become available as action sets (e.g., mcp_filesystem) whose
+        schemas sessions read via add_action_sets.
         """
         try:
             from app.mcp import mcp_client, set_default_stdio_cwd
