@@ -8,7 +8,7 @@ retrieval during task execution, improving performance and predictability.
 """
 
 import platform as platform_lib
-from typing import List, Dict, Set, Optional
+from typing import Iterable, List, Dict, Set, Optional
 import logging
 
 logger = logging.getLogger("ActionSetManager")
@@ -60,44 +60,46 @@ class ActionSetManager:
             - Actions are filtered by their visibility mode
             - Actions can belong to multiple sets
         """
-        from agent_core import registry_instance, PLATFORM_ALL
-
         # Always include core set
         required_sets: Set[str] = set(selected_sets) | {"core"}
-        compiled: List[str] = []
+        compiled = [meta.name for meta in self.actions_in_sets(required_sets, mode)]
+        logger.debug(f"Compiled {len(compiled)} actions from sets: {required_sets}")
+        return compiled
 
-        # Get current platform for implementation lookup
+    def actions_in_sets(self, set_names: Iterable[str], mode: str = "CLI") -> list:
+        """Metadata of every action in any of exactly these sets.
+
+        Unlike compile_action_list, "core" is not added implicitly. Uses each
+        action's implementation for the current platform and filters by
+        visibility mode.
+
+        Args:
+            set_names: Action set names.
+            mode: Visibility mode filter - "CLI", "GUI", or "ALL".
+
+        Returns:
+            List of ActionMetadata, in registry order.
+        """
+        from agent_core import registry_instance, PLATFORM_ALL
+
+        required_sets = set(set_names)
         current_platform = platform_lib.system().lower()
-
-        for action_name, platform_impls in registry_instance._registry.items():
-            # Get the best implementation for current platform
+        found = []
+        for platform_impls in registry_instance._registry.values():
             impl = platform_impls.get(current_platform) or platform_impls.get(
                 PLATFORM_ALL
             )
-
             if impl is None:
                 continue
-
             metadata = impl.metadata
-
-            # Check if action belongs to any of the required sets
+            # Actions that declare no set are never compiled into a list.
             action_sets = getattr(metadata, "action_sets", [])
-            if not action_sets:
-                # Actions without action_sets are not included (backward compatibility)
-                # They will be included via RAG fallback if needed
-                continue
-
             if not self._action_in_sets(action_sets, required_sets):
                 continue
-
-            # Filter by visibility mode
             if not self._is_visible_in_mode(metadata.mode, mode):
                 continue
-
-            compiled.append(action_name)
-
-        logger.debug(f"Compiled {len(compiled)} actions from sets: {required_sets}")
-        return compiled
+            found.append(metadata)
+        return found
 
     def _action_in_sets(self, action_sets: List[str], required_sets: Set[str]) -> bool:
         """Check if an action belongs to any of the required sets."""

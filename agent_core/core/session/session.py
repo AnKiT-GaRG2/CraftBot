@@ -4,7 +4,8 @@ Session dataclass — the single work primitive of the agent.
 
 A Session is a persistent, standalone agent lane. Every session has its own
 event stream, its own durable trigger queue, its own serial agent loop, and
-its own loaded capabilities (action sets + skills), todos and run budgets.
+its own loaded skills, todos and run budgets. The actions a session prints in
+<actions> follow from its type alone (SessionType.BASE_ACTION_SETS).
 
 Sessions never "end": a run (wake → work → final message) simply stops
 enqueuing continuation triggers, and the session waits for its next input.
@@ -14,7 +15,7 @@ Sessions exist until the user deletes them (main is permanent).
 from __future__ import annotations
 from dataclasses import dataclass, field
 from datetime import datetime
-from typing import List, Dict, Any, Optional
+from typing import List, Dict, Any, Optional, Tuple
 
 from agent_core.core.models.reasoning import ReasoningChoice
 from agent_core.core.session.todo import TodoItem
@@ -28,6 +29,17 @@ class SessionType:
     AGENT_APP = "agent_app"
 
     ALL = (MAIN, CHAT, AGENT_APP)
+
+    # Action sets whose schemas every session of a type prints in <actions>,
+    # on top of the always-present "core". This is the whole list: nothing a
+    # run does changes it. Loading more sets is a read (add_action_sets puts
+    # their schemas into the session's event stream), so the printed list can
+    # never accumulate across runs and the prompt prefix stays cacheable.
+    BASE_ACTION_SETS: Dict[str, Tuple[str, ...]] = {
+        MAIN: (),
+        CHAT: (),
+        AGENT_APP: ("file_operations", "code_execution", "agent_app"),
+    }
 
 
 # The singleton main session id. All ambient input (integrations, scheduler,
@@ -55,8 +67,9 @@ class Session:
         created_at: ISO timestamp when the session was created.
         last_active_at: ISO timestamp of the last run activity.
         archived: Soft-hide flag (session kept, hidden from the sidebar).
-        action_sets: Loaded action set names (always includes ``core``).
-        compiled_actions: Cached action names compiled from action_sets.
+        compiled_actions: Action names printed in <actions>, compiled from
+            the type's base sets by the SessionManager at create/restore.
+            Runtime only: derived, never persisted.
         selected_skills: Skills currently loaded into this session.
         todos: Current todo list for the active run.
         workspace_dir: Persistent scratch directory for this session.
@@ -81,7 +94,6 @@ class Session:
     last_active_at: str = field(default_factory=lambda: datetime.utcnow().isoformat())
     archived: bool = False
     # Capabilities
-    action_sets: List[str] = field(default_factory=list)
     compiled_actions: List[str] = field(default_factory=list)
     selected_skills: List[str] = field(default_factory=list)
     # Backup of CLI actions when in GUI mode (internal use only)
@@ -103,6 +115,11 @@ class Session:
     total_input_tokens: int = 0
     total_output_tokens: int = 0
     total_cache_tokens: int = 0
+
+    @property
+    def base_action_sets(self) -> List[str]:
+        """The action sets this session prints in <actions> (besides core)."""
+        return list(SessionType.BASE_ACTION_SETS[self.type])
 
     def touch(self) -> None:
         """Update last_active_at to now."""
@@ -146,8 +163,6 @@ class Session:
             "created_at": self.created_at,
             "last_active_at": self.last_active_at,
             "archived": self.archived,
-            "action_sets": self.action_sets,
-            "compiled_actions": self.compiled_actions,
             "selected_skills": self.selected_skills,
             "todos": [todo.to_dict() for todo in self.todos],
             "workspace_dir": self.workspace_dir,
@@ -175,8 +190,6 @@ class Session:
             created_at=data.get("created_at", datetime.utcnow().isoformat()),
             last_active_at=data.get("last_active_at", datetime.utcnow().isoformat()),
             archived=data.get("archived", False),
-            action_sets=data.get("action_sets", []),
-            compiled_actions=data.get("compiled_actions", []),
             selected_skills=data.get("selected_skills", []),
             todos=todos,
             workspace_dir=data.get("workspace_dir"),

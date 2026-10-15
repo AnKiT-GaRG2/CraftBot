@@ -134,7 +134,6 @@ class SessionManager:
         session_type: str = SessionType.CHAT,
         title: str = "",
         session_id: Optional[str] = None,
-        action_sets: Optional[List[str]] = None,
         selected_skills: Optional[List[str]] = None,
         agent_app_project_id: Optional[str] = None,
         gui_mode: bool = False,
@@ -147,7 +146,6 @@ class SessionManager:
             session_type: main | chat | agent_app.
             title: Sidebar title ("New chat" placeholder until auto-titled).
             session_id: Explicit id (main / agent-app); random hex otherwise.
-            action_sets: Extra action sets to load on top of core.
             selected_skills: Skills to preload (slash-command entry, Agent App).
             agent_app_project_id: Backing project for agent_app sessions.
             gui_mode: Whether the session starts in GUI mode.
@@ -167,20 +165,10 @@ class SessionManager:
 
         workspace_dir = self._prepare_workspace_dir(sid)
 
-        from app.action.action_set import action_set_manager
-
-        selected_sets = list(action_sets or [])
-        visibility_mode = "GUI" if gui_mode else "CLI"
-        compiled_actions = action_set_manager.compile_action_list(
-            selected_sets, mode=visibility_mode
-        )
-
         session = Session(
             id=sid,
             type=session_type,
             title=title or ("Main" if session_type == SessionType.MAIN else "New chat"),
-            action_sets=selected_sets,
-            compiled_actions=compiled_actions,
             selected_skills=list(selected_skills or []),
             workspace_dir=str(workspace_dir),
             agent_app_project_id=agent_app_project_id,
@@ -189,6 +177,7 @@ class SessionManager:
                 reasoning_effort.value if reasoning_effort is not None else None
             ),
         )
+        self._compile_actions(session)
         self.sessions[sid] = session
 
         # Per-session isolated state (counters, current todo, ...)
@@ -249,7 +238,7 @@ class SessionManager:
     def clear_session(self, session_id: str) -> bool:
         """Clear a session's conversation: event stream, todos, run counters.
 
-        The session itself (title, loaded action sets/skills) is kept.
+        The session itself (title, loaded skills) is kept.
         """
         session = self.sessions.get(session_id)
         if not session:
@@ -301,16 +290,11 @@ class SessionManager:
     def restore_session(self, session: Session) -> Session:
         """Register a session loaded from persistence at boot.
 
-        Recompiles the action list (the installed action registry may have
+        Compiles the action list (the installed action registry may have
         changed between runs) and re-registers per-session state, but does
         NOT touch the persisted event stream — the caller restores that.
         """
-        from app.action.action_set import action_set_manager
-
-        visibility_mode = "GUI" if session.gui_mode else "CLI"
-        session.compiled_actions = action_set_manager.compile_action_list(
-            session.action_sets, mode=visibility_mode
-        )
+        self._compile_actions(session)
         if not session.workspace_dir:
             session.workspace_dir = str(self._prepare_workspace_dir(session.id))
         else:
@@ -401,69 +385,19 @@ class SessionManager:
 
     # ─────────────────────── Capability Management ───────────────────────────
 
-    def add_action_sets(
-        self, session_id: str, sets_to_add: List[str]
-    ) -> Dict[str, Any]:
-        """Add action sets to a session and recompile its action list."""
-        session = self.sessions.get(session_id)
-        if not session:
-            return {"success": False, "error": f"No session {session_id}"}
+    @staticmethod
+    def _compile_actions(session: Session) -> None:
+        """Compile the actions a session prints in <actions>.
 
+        A function of the session's type (and GUI mode) only, so it is
+        recomputed rather than stored: a set loaded during a run delivers its
+        schemas through the event stream and never lands here.
+        """
         from app.action.action_set import action_set_manager
 
-        current_sets = set(session.action_sets)
-        new_sets = set(sets_to_add) - current_sets
-        session.action_sets = list(current_sets | new_sets)
-
-        visibility_mode = "GUI" if session.gui_mode else "CLI"
-        old_actions = set(session.compiled_actions)
         session.compiled_actions = action_set_manager.compile_action_list(
-            session.action_sets, mode=visibility_mode
+            session.base_action_sets, mode="GUI" if session.gui_mode else "CLI"
         )
-        new_actions = set(session.compiled_actions) - old_actions
-
-        self._persist(session)
-
-        logger.debug(
-            f"[SessionManager] Added action sets {sets_to_add} to {session_id}, "
-            f"now {len(session.compiled_actions)} actions"
-        )
-        return {
-            "success": True,
-            "current_sets": session.action_sets,
-            "added_actions": list(new_actions),
-            "total_actions": len(session.compiled_actions),
-        }
-
-    def remove_action_sets(
-        self, session_id: str, sets_to_remove: List[str]
-    ) -> Dict[str, Any]:
-        """Remove action sets from a session and recompile."""
-        session = self.sessions.get(session_id)
-        if not session:
-            return {"success": False, "error": f"No session {session_id}"}
-
-        from app.action.action_set import action_set_manager
-
-        sets_to_remove_filtered = [s for s in sets_to_remove if s != "core"]
-        current_sets = set(session.action_sets)
-        session.action_sets = list(current_sets - set(sets_to_remove_filtered))
-
-        visibility_mode = "GUI" if session.gui_mode else "CLI"
-        old_actions = set(session.compiled_actions)
-        session.compiled_actions = action_set_manager.compile_action_list(
-            session.action_sets, mode=visibility_mode
-        )
-        removed_actions = old_actions - set(session.compiled_actions)
-
-        self._persist(session)
-
-        return {
-            "success": True,
-            "current_sets": session.action_sets,
-            "removed_actions": list(removed_actions),
-            "total_actions": len(session.compiled_actions),
-        }
 
     def add_skill(self, session_id: str, skill_name: str) -> bool:
         """Load a skill into a session (additive)."""
@@ -484,11 +418,6 @@ class SessionManager:
             session.selected_skills.remove(skill_name)
             self._persist(session)
         return True
-
-    def get_action_sets(self, session_id: str) -> List[str]:
-        """Get a session's loaded action sets."""
-        session = self.sessions.get(session_id)
-        return session.action_sets.copy() if session else []
 
     def get_compiled_actions(self, session_id: str) -> List[str]:
         """Get a session's compiled action list."""

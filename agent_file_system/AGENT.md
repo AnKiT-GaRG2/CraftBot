@@ -161,7 +161,7 @@ What the LLM sees on each `_select_action` call:
 - The relevant slice of the session's event stream (recent actions, results, user messages).
 - Memory pointers retrieved by the ContextEngine for relevance.
 - Current requirements (`set_requirement`) and todos, read back from the event stream.
-- The list of currently available actions (loaded action sets + skill-loaded sets).
+- `<actions>`: your session's own actions, fixed by session type. Schemas of any other set arrive in the event stream (see `## Action Sets`).
 
 Need history beyond what's in the stream? Use `memory_search` (`## Memory`) or read EVENT.md directly (`## File System`).
 
@@ -215,14 +215,14 @@ A user follow-up after delivery starts a NEW run in the same session; the event 
 
 ### The action surface
 
-Any loaded action is callable on any turn. Expand or shrink the surface in place:
+Any registered action is callable on any turn; what you load is the schema you need to call it well:
 
 ```
-add_action_sets([...]) / remove_action_sets([...])   load / unload action-set bundles
-use_skill(name) / unload_skill(name)                 load / unload skills mid-run
+add_action_sets([...])                  put a set's action schemas into your event stream
+use_skill(name) / unload_skill(name)    load / unload skills mid-run
 ```
 
-All four recompile the action list and rebuild the LLM caches; the new actions appear in the next turn's prompt. Skills and action sets are also pre-loaded automatically for workflow runs (memory, proactive, skill slash commands).
+`<actions>` never changes: it is fixed by the session type. `add_action_sets` is a read: the schemas arrive as one `action_schemas` event and you call those actions by name. Skills rebuild the LLM caches; their instructions appear in the next turn's prompt. Workflow runs (memory, proactive, skill slash commands) deliver their sets' schemas the same way at run start.
 
 ### `send_message.continue_work`
 
@@ -1361,7 +1361,7 @@ app/data/action/integrations/<platform>/...  integration bundles (one file may r
 ```
 
 Examples of files with multiple registrations:
-- `action_set_management.py` registers `add_action_sets`, `remove_action_sets`, `list_action_sets`.
+- `action_set_management.py` registers `add_action_sets`, `list_action_sets`.
 - `skill_management.py` registers `list_skills`, `use_skill`, `unload_skill`.
 - `integrations/integration_management.py` registers `list_available_integrations`, `connect_integration`, `check_integration_status`, `disconnect_integration`.
 - Integration bundles under `integrations/`: github (~107 actions), stripe (~99), hubspot (~90), discord (~80), telegram (~76), lark_drive (~76), jira (~61), slack (~60), line (~59), twitter (~46), lark (~46), whatsapp (~40), outlook (~40), google_workspace/{gmail,google_calendar,google_drive,google_docs,google_youtube}, linkedin, notion, lark_calendar.
@@ -1384,9 +1384,7 @@ grep_files 'description=' app/data/action/ -A 0      # list all descriptions
 grep_files '<keyword>' app/data/action/ -A 2 -B 1    # find actions matching a concept
 ```
 
-**3. By currently-loaded set (what you can call right now).** Two options:
-- The runtime puts the current action list in your prompt every turn. That list is authoritative.
-- Call the `list_action_sets` action to see which sets are loaded plus all actions in them. Useful when the prompt list is truncated or you suspect a set is missing.
+**3. By what you can see right now.** `<actions>` in your prompt, plus every `action_schemas` event still in your event stream. `list_action_sets` lists every set and the sets in your `<actions>`.
 
 ### `@action(...)` decorator schema
 
@@ -1404,14 +1402,14 @@ output_schema    dict  JSON-schema-like description of return shape. Read this t
 requirement      list  pip packages auto-installed in sandbox before execution.
 test_payload     dict  test input for diagnostic harness. The "simulated_mode" key bypasses real execution.
 action_sets      list  set names this action belongs to. Determines when it's loaded.
-parallelizable   bool  default True. False = action runs alone in its turn (e.g. set/skill changes, end_turn).
+parallelizable   bool  default True. False = action runs alone in its turn (e.g. skill changes, end_turn).
 irreversible     bool  default False. True = outward-facing side effect (send email/message,
                        public post). Guarded by an activity ledger: intent recorded before
                        execution, completed runs never silently re-executed.
 ```
 
 Key implications when reading an action:
-- `parallelizable=False` actions cannot be batched. The router will sequence them. Examples: `add_action_sets`, `remove_action_sets`, `end_turn`.
+- `parallelizable=False` actions cannot be batched. The router will sequence them. Examples: `use_skill`, `end_turn`.
 - `execution_mode="sandboxed"` means the action runs in a fresh venv subprocess with `requirement` packages installed automatically. Most actions are `internal` (run in-process).
 - `default=True` means the action is in the action list regardless of which sets are loaded. Common defaults: `send_message`, `update_todos`, `set_requirement`, `spawn_subagent`, `run_shell`, `generate_image`, `generate_video`.
 - `mode="GUI"` actions (`clipboard_read`, `clipboard_write`) are filtered out of the CLI runtime's action list even when their set is loaded.
@@ -1426,7 +1424,7 @@ core                     send_message, send_message_with_attachment, end_turn, w
                          read_file, grep_files, find_files, list_folder, stream_edit, write_file,
                          run_shell, web_search, web_fetch, http_request, memory_search,
                          describe_image, schedule_task, scheduled_task_list, remove_scheduled_task,
-                         add_action_sets, remove_action_sets, list_action_sets,
+                         add_action_sets, list_action_sets,
                          list_skills, use_skill, unload_skill,
                          list_available_integrations, connect_integration,
                          check_integration_status, disconnect_integration
@@ -1482,7 +1480,7 @@ For everything routine (existing capabilities), prefer composing existing action
 
 ## Action Sets
 
-An action set is a named bundle of actions you load together. Loading a set makes all its actions available in your prompt; the LLM can then call them. Sets exist to keep your prompt small (only the actions you need) without sacrificing capability.
+An action set is a named bundle of actions. Your `<actions>` list holds the sets of your session type; `add_action_sets` puts the schemas of any other set into your event stream. Sets exist to keep your prompt small (only the schemas you need) without sacrificing capability.
 
 Code: [app/action/action_set.py](app/action/action_set.py) (`ActionSetManager`). Set descriptions: [app/action/action_set.py](app/action/action_set.py) `DEFAULT_SET_DESCRIPTIONS`.
 
@@ -1543,13 +1541,14 @@ required_sets = set(selected_sets) | {"core"}
 
 You cannot opt out of `core`, and `core` now carries the everyday surface: messaging, todos, requirements, sub-agents, file ops, shell, web, memory search, scheduling, set/skill/integration management (see the core list in `## Actions`). Note `clipboard_read`/`clipboard_write` are in `core` but `mode="GUI"`, so they do not appear in the CLI runtime.
 
-### How sets are loaded
+### How sets reach you
 
-1. **Automatically per run** — workflow runs (memory, proactive, skill slash commands) and `schedule_task(action_sets=[...])` pre-load the sets a run needs. `core` is always added.
-2. **Mid-run** — call `add_action_sets(action_sets=[...])` or `remove_action_sets(action_sets=[...])`. The action list is recompiled, caches rebuild, and the new actions appear in the next turn's prompt.
-3. **Via skill selection** — if a skill's `SKILL.md` frontmatter has `action-sets: [...]`, those sets are auto-loaded when the skill is loaded (`use_skill`) and unloaded with it (`unload_skill`). See `## Skills`.
+1. **By session type** — `<actions>` holds `core` plus the base sets of the session type, and nothing else, ever: main and chat sessions get `core` only; Agent App sessions also get `file_operations`, `code_execution`, `agent_app`. Source: `SessionType.BASE_ACTION_SETS` in [agent_core/core/session/session.py](agent_core/core/session/session.py).
+2. **Mid-run** — call `add_action_sets(action_sets=[...])`. It is a read: one `action_schemas` event lands in your event stream with the schemas of every action in those sets that you cannot already see, plus the guidance of each integration among them (see `## Integrations`). Call those actions by name exactly like the ones in `<actions>`. Loading a set again is a no-op while its schemas are still in the stream.
+3. **Per run** — workflow runs (memory, proactive, skill slash commands) and `schedule_task(action_sets=[...])` deliver the run's sets the same way at run start.
+4. **Via skill selection** — if a skill's `SKILL.md` frontmatter has `action-sets: [...]`, `use_skill` delivers those sets the same way. See `## Skills`.
 
-After loading, the new actions ARE in your prompt the next turn. You do not need to re-fetch or refresh anything.
+There is no unload. When the event stream folds, it keeps an `action_schemas` event while one of its actions is still called in the recent events it keeps; otherwise it drops the event without summarizing it, and a note names the actions whose schemas left. Call `add_action_sets` again when you need them.
 
 ### Picking the right sets
 
@@ -1566,18 +1565,18 @@ Per-platform integration          <integration_name>  (e.g. slack), or a
 
 Loading every set bloats the prompt and slows action selection — add only what the work needs.
 
-### Tracking what is loaded
+### Tracking what you can see
 
-Two ways to know what is currently active:
-1. The current prompt's action list (always authoritative).
-2. The `list_action_sets` action returns `{ available_sets, current_sets, current_actions }`.
+1. `<actions>` in your prompt: your session's own actions.
+2. `action_schemas` events in your event stream: the sets you loaded that are still in context.
+3. The `list_action_sets` action returns `{ available_sets, current_sets }`; `current_sets` are the sets in `<actions>`.
 
-If you suspect a set was supposed to be loaded but isn't (an action you expect to see is missing), call `list_action_sets` to confirm before assuming you have to manually add it with `add_action_sets`.
+An action you expect is in neither? Call `add_action_sets` with its set.
 
 ### Set lifecycle
 
-- Loaded sets belong to the session and persist across turns of a run.
-- `add_action_sets` / `remove_action_sets` mutate the selection at any time; workflow-loaded sets are removed automatically at run end.
+- `<actions>` is fixed by the session type and is the same in every run.
+- Loaded schemas live in the event stream and leave it only through a fold (see above).
 - Skills load and unload mid-run via `use_skill` / `unload_skill` — no need to end anything to switch skills.
 
 See `## Runs` for how runs work and `## Runtime` for how the action list reaches your prompt each turn.
@@ -1759,7 +1758,7 @@ mcp_config.json
   effect          servers with enabled=true that are not connected get connected.
                   servers that became enabled=false get disconnected.
                   newly-added servers register their action set as mcp_<name>.
-                  tools appear in the next turn's action list (after action set is loaded).
+                  tools are callable at once; add_action_sets shows their schemas.
   log signature   [MCP] Loaded config with N server(s) ... [MCP] Connecting to '<name>' ...
 
 skills_config.json
@@ -2206,7 +2205,7 @@ After enabling/adding, in order of cheapness:
 
 3. load the set into your task:
      call add_action_sets({"action_sets": ["mcp_<server_name>"]})
-     The new tools appear in the next turn's action list.
+     The tools' schemas arrive in your event stream as an action_schemas event.
 
 4. call a tool from the set.
    If it returns status=success, you're done. If status=error, the message
@@ -2274,7 +2273,7 @@ If the subprocess fails standalone, the harness will fail too. Fix it standalone
 Implications:
 - Toggling `enabled` cleanly connects or disconnects a single server.
 - Editing `env` for a connected server does NOT take effect until the server reconnects. Disable then re-enable, or call `mcp_client.reload()` after the file change.
-- Tasks already running keep their LOCKED action sets. New MCP tools become callable in the NEXT task or after `add_action_sets`.
+- New MCP tools are callable as soon as the server registers them; call `add_action_sets` with the server's set to see their schemas.
 
 ### Slash commands (user-side)
 
@@ -2427,11 +2426,7 @@ When `allowed-tools` is non-empty in the frontmatter, the action filter narrows 
 
 ### `action-sets` auto-loading
 
-When a skill is loaded, every name in its `action-sets` is added to the session's loaded action sets (and removed again when the skill unloads):
-
-```
-final_action_sets = dedup(current_sets + skill.action_sets)
-```
+When a skill is loaded, `use_skill` delivers the schemas of every set in its `action-sets` into the event stream, exactly like `add_action_sets`. Your `<actions>` list does not change, and unloading the skill leaves the schemas where they are.
 
 A skill that needs `web_research`, `file_operations`, and an MCP server should declare:
 ```
@@ -2906,7 +2901,7 @@ The built-in integrations cover the common 80%; MCP covers the long tail.
 
 Connecting is one job; *using* an integration is another. A connected integration beats asking the user or a generic web search — check `check_integration_status` before either (see `## Use What You Have`). Every integration carries an `INTEGRATION.md` reference doc at `craftos_integrations/providers/<name>/INTEGRATION.md` — non-obvious workflows, identity formats, error meanings, and quirks that don't fit in action `input_schema` descriptions.
 
-Each INTEGRATION.md has an `## Essentials` section that is AUTO-INJECTED into your prompt when the user's message mentions that integration — so the basics are usually already in front of you. Grep the full file for anything deeper.
+An integration's guidance (its provider `GUIDANCE.md`, else the `## Essentials` section of its INTEGRATION.md, plus its connected accounts) arrives with its action schemas when you load its set, so the basics are already in front of you when you use it. Grep the full file for anything deeper.
 
 **Consult it before asking the user for input the integration could probably look up itself.** Common case: the user says "send a WhatsApp message to X" and you're tempted to ask for their own phone number — don't. The bridge already knows the logged-in user's identity. The INTEGRATION.md spells out which action returns it.
 
@@ -4639,7 +4634,7 @@ Quick lookup of the terms used throughout this manual. Each entry points to the 
 ```
 action                    atomic unit the LLM picks each turn                              ## Actions
 action set                named bundle of actions loaded together                          ## Action Sets
-add_action_sets           action that loads additional action sets mid-run                 ## Action Sets
+add_action_sets           action that puts a set's schemas into the event stream           ## Action Sets
 add_outcome               recurring_update_task field for recording execution result       ## Proactive
 agent file system         the persistent agent_file_system/ directory                      ## File System
 AGENT.md                  this file - operational manual                                    ## Self-Edit
@@ -4665,7 +4660,7 @@ heartbeat-processor       skill that executes due tasks during a heartbeat      
 hot-reload                config-watcher debounced 0.5s reload of /app/config/             ## Configs
 INDEX_TARGET_FILES        the six files indexed by memory_search (+ user extras)           ## Memory
 integration               external-service connection (Slack, GitHub, Jira, ...)           ## Integrations
-INTEGRATION.md            per-integration reference doc; ## Essentials auto-injected       ## Integrations
+INTEGRATION.md            per-integration reference doc; ## Essentials sent with schemas   ## Integrations
 AGENT_APP.md              per-project doc inside a Agent App project                       ## Agent App / ## File System
 Agent App                 generated React + PocketBase apps served from CraftBot           ## Agent App
 LLM                       large language model used for text generation                    ## Models

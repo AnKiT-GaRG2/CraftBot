@@ -287,6 +287,8 @@ def _install_dispatch() -> None:
         # bus by react()'s _announce_trigger, so the stream copy stays hidden
         # (also keeps the restart-restore replay from double-posting it).
         EventType.TRIGGER: EventTransformer._build_hidden,
+        # Action schemas are prompt material for the model, not chat content.
+        EventType.ACTION_SCHEMAS: EventTransformer._build_hidden,
     }
 
 
