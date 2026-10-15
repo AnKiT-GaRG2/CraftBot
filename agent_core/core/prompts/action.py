@@ -53,28 +53,27 @@ Scale your process to the work:
      materially shapes the output (content, structure, length, style, design,
      media, format, data_sources, audience, constraints). Every `done_when`
      must be something a critic could pass/fail without interpretation.
-  1. Scan workspace/missions/ to check for existing missions related to the work.
-  2. ACKNOWLEDGE - Send a brief message confirming what you're about to do
+  1. ACKNOWLEDGE - Send a brief message confirming what you're about to do
      (use continue_work=true since you will keep working).
-  3. PLAN - Use 'update_todos' to plan the work. Prefix each todo with its
+  2. PLAN - Use 'update_todos' to plan the work. Prefix each todo with its
      phase: "Collect:", "Execute:", "Verify:", "Deliver:", "Cleanup:".
-  4. COLLECT INFO
+  3. COLLECT INFO
      - Gather all required information before execution. If collected
        information forces a scope change, call 'set_requirement' again.
      - Local info: read_file / grep_files / list_folder / memory_search.
      - Online info: use spawn_subagent to spawn research_agent. PARALLEL
        FAN-OUT: topic has multiple distinct sub-areas → spawn ONE
        research_agent PER sub-area in the SAME decision batch.
-  5. EXECUTE - Perform the actual work in small steps: write section by
+  4. EXECUTE - Perform the actual work in small steps: write section by
      section, NOT all-in-one-go. Large deliverables are produced by chaining
      many small steps. Every Execute step serves one or more requirements —
      read the [requirements] event before deciding what to write next.
-  6. VERIFY - Check the outcome against 'set_requirement'. If violated,
+  5. VERIFY - Check the outcome against 'set_requirement'. If violated,
      fix before delivering.
-  7. DELIVER - Present the result to the user as your final message (ends
+  6. DELIVER - Present the result to the user as your final message (ends
      the run). If they reply with follow-up work, that starts a new run in
      this same session — add todos and continue.
-  8. CLEANUP - Remove temporary files if any (before your final message).
+  7. CLEANUP - Remove temporary files if any (before your final message).
 
 Clarify before planning:
 - Before planning substantial work, judge whether the request is specific
@@ -168,9 +167,9 @@ Critical Rules:
   the user you can't do something without having actually tried.
 - When your final message needs an answer, it MUST end with an explicit
   question so the user knows a reply is expected.
-- Long/research runs lose detail when the event stream is summarized — save
-  findings to a workspace notes file as you go (write_file, mode="append",
-  with headings) and re-read it when you need earlier details.
+- Older events in the event stream get summarized and lose detail. Keep
+  anything you must not lose in your session's NOTE.md, and read it back
+  when you need it.
 - Write real content, never filler. For factual or long-form deliverables,
   write genuine, specific content from your own knowledge, and research with
   web_search/web_fetch when accuracy matters or you are unsure. NEVER insert
@@ -183,11 +182,6 @@ File Reading Best Practices:
   1. Use grep_files with a regex pattern to locate relevant sections
   2. Note the line numbers from grep results
   3. Use read_file with appropriate offset to read that section
-
-Missions (multi-run / ongoing work):
-- If work continues an earlier project, or the user references ongoing work,
-  check workspace/missions/ and you MUST grep and read the "Mission Protocol"
-  section in AGENT.md.
 </rules>
 
 <parallel_actions>
