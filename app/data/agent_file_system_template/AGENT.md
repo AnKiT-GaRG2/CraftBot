@@ -770,12 +770,11 @@ You're blocked when you don't know what to do next AND retrying won't help. The 
 - Full input schema: [app/data/action/read_file.py](app/data/action/read_file.py).
 
 ### grep_files
-Three output modes:
-- `files_with_matches`: returns file paths only. Use for discovery ("which files contain X").
-- `content`: returns matching lines with line numbers. Use for investigation.
-- `count`: returns match counts per file. Use for frequency checks.
+Runs ripgrep and returns matching lines as `path:line: text`. When you search a folder, paths are relative to it, and the message names the folder. With `context`, surrounding lines read `path-line- text` and separate groups are split by `--`.
 
-Supported parameters: `glob`, `file_type`, `before_context` / `after_context`, `case_insensitive`, `multiline`.
+Parameters: `pattern` (ripgrep regex), `path`, `glob`, `ignore_case`, `context`, `limit` (default 100 matches; the message says when the limit cut the results short).
+
+A folder search skips files ignored by `.gitignore`, hidden files and binary files. To search one of those, pass its file path.
 
 Full input schema: [app/data/action/grep_files.py](app/data/action/grep_files.py).
 

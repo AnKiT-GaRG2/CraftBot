@@ -37,6 +37,7 @@ from pathlib import Path
 from typing import List
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
+sys.path.insert(0, str(REPO_ROOT))
 
 # Gitignored build outputs that ARE required at runtime. Kept short and
 # explicit: every entry here is a hole in the "git decides" guarantee.
@@ -126,9 +127,11 @@ def build(output: Path) -> int:
     size_mb = output.stat().st_size / (1024 * 1024)
     print(f"wrote {output} — {written} files, {size_mb:.1f} MB")
 
+    from app import ripgrep_runtime
+
     # A payload without these is installable and then broken at runtime, in
     # ways that surface far from the cause. Fail the build instead.
-    required = [
+    required = ripgrep_runtime.bundled_files() + [
         "run.py",
         "main.py",
         "requirements.txt",
