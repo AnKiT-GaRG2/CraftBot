@@ -1668,3 +1668,29 @@ def test_a_download_name_never_carries_a_saved_password(eng):
     assert any("Download saved: report-[redacted].txt" in line for line in logged)
     for blob in (eng.sink.of("event"), clicked, later):
         assert secret not in json.dumps(blob, ensure_ascii=False)
+
+
+# ── sound: Playwright mutes Chromium unless told not to ────────────────────
+
+
+@pytest.mark.parametrize("sound", [True, False])
+def test_sound_setting_controls_the_mute_switch(tmp_path, sound):
+    core = BrowserCore(settings=MiniBrowserSettings(sound=sound), ops_registry={})
+    kwargs = core._launch_kwargs(tmp_path / "profile", "chromium", None)
+    ignored = kwargs.get("ignore_default_args") or []
+    assert ("--mute-audio" in ignored) is sound
+
+
+def test_the_running_browser_is_not_muted(eng):
+    """Default settings: Chromium runs without --mute-audio, so pages can
+    play sound through the computer's speakers."""
+    psutil = pytest.importorskip("psutil")
+    procs = _profile_processes(eng.root / "profile")
+    assert procs, "no Chromium process found on the test profile"
+    lines = []
+    for proc in procs:
+        try:
+            lines.append(" ".join(proc.cmdline()))
+        except psutil.Error:
+            continue
+    assert lines and not any("--mute-audio" in line for line in lines)

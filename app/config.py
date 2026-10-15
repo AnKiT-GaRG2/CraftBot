@@ -142,6 +142,7 @@ def _get_default_settings() -> Dict[str, Any]:
             "adblock": True,
             "humanlike": True,
             "show_cursor": True,
+            "sound": True,  # applies at the browser's next start
             "max_fps": 12,
             "jpeg_quality": 70,
             "search_url": "https://duckduckgo.com/?q={query}",

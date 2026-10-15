@@ -29,6 +29,23 @@ tab live in the Mini Browser page and take control of it.
    the result says the page is still loading data, `mini_browser_wait` with
    `text` before concluding.
 
+## Posts and message boxes
+
+Post and message boxes (Threads, X, Facebook, LinkedIn, chat apps) restyle
+what you type: web addresses become links, a link preview card appears
+under the text, @mentions and #tags are highlighted. That is the site's
+formatting, not your mistake.
+- `mini_browser_type` reads such a box back after typing and says whether it
+  holds your whole text ("Checked: ..."). Trust that: never delete and
+  retype a post because it looks different. (The compact `page` shows only
+  the start of a long box.)
+- Link preview: keep it unless the user asked for none. To remove it, click
+  its close (X) button once, after the text is final; editing the address
+  afterwards can bring it back. If it comes back anyway, leave it and tell
+  the user.
+- Never type the same text into a page more than twice. The action refuses
+  a fourth time; if it still looks wrong, stop and ask the user.
+
 ## Work autonomously
 
 Do routine steps without asking: searching, clicking through, filling forms

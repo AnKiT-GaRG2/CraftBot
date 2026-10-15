@@ -9,7 +9,7 @@ from __future__ import annotations
 import asyncio
 import time
 from dataclasses import dataclass, field
-from typing import Any, Dict, List, Optional, Set
+from typing import Any, Dict, List, Optional, Set, Tuple
 
 # Who owns a tab. ``None`` owner == a tab the user opened themselves.
 OWNER_KIND_USER = "user"
@@ -84,6 +84,12 @@ class Tab:
     # Secrets typed into this tab by vault autofill — used ONLY to scrub
     # outgoing text. Never serialise this field anywhere.
     filled_secrets: List[str] = field(default_factory=list, repr=False)
+
+    # Texts an agent typed here recently: hash of (page, text) -> (times,
+    # first time). Stops a delete-and-retype loop (ops.TYPE_REPEAT_LIMIT).
+    typed_history: Dict[str, Tuple[int, float]] = field(
+        default_factory=dict, repr=False
+    )
 
     # The tab whose page opened this one (popups), so closing a popup returns
     # its owner (and the view) to where it came from.

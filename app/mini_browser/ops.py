@@ -35,6 +35,7 @@ from __future__ import annotations
 
 import asyncio
 import functools
+import hashlib
 import ipaddress
 import math
 import os
@@ -116,6 +117,21 @@ DATA_NOTE = (
     "mini_browser_wait (e.g. with text=...) before concluding."
 )
 POPUP_NOTE = " It opened a new tab."
+FORMATTING_NOTE = (
+    " Sites like Threads or X turn web addresses into links and may add a "
+    "link preview under the text: that is their formatting, not a typing "
+    "mistake, so do not delete and retype it."
+)
+
+# mini_browser_type refuses to type the same text (TYPE_REPEAT_MIN_CHARS or
+# more) into the same page more than TYPE_REPEAT_LIMIT times within
+# TYPE_REPEAT_WINDOW_S: an agent that took a site's formatting for its own
+# mistake deleted and retyped a post in an endless loop.
+TYPE_REPEAT_LIMIT = 3
+TYPE_REPEAT_WINDOW_S = 600.0
+TYPE_REPEAT_MIN_CHARS = 20
+# How much of a rich text field's text the check after typing reads.
+EDITOR_TEXT_MAX = 20000
 
 # Input types whose value is set as a whole (the browser shows a segmented
 # editor, a picker or a slider for them, which per-key typing cannot drive).
@@ -328,6 +344,16 @@ TYPED_CHECK_JS = (
 }
 """
 )
+
+# Called on an element: the text a rich text field (contenteditable) shows,
+# or null for any other element.
+EDITOR_TEXT_JS = r"""
+(el, max) => {
+  const ctl = (el.tagName === 'LABEL' && el.control) ? el.control : el;
+  if (!ctl.isContentEditable) return null;
+  return String(ctl.innerText || ctl.textContent || '').slice(0, max);
+}
+"""
 
 # Called on an element: find the <option> matching a value or a visible label.
 SELECT_MATCH_JS = r"""
@@ -1681,6 +1707,96 @@ async def _set_whole_value(
     return await _done(core, tab, message + note)
 
 
+_INVISIBLE_RE = re.compile("[​-‍⁠﻿]")
+_ADDRESS_PREFIX_RE = re.compile(r"^(?:https?://)?(?:www\.)?", re.IGNORECASE)
+
+
+def _plain(text: str) -> str:
+    """Text as a reader compares it: invisible characters dropped, every run
+    of whitespace (no-break spaces and line breaks too) one space."""
+    return " ".join(_INVISIBLE_RE.sub("", str(text or "")).split()).casefold()
+
+
+def _address_host(address: str) -> str:
+    """The part of an address every site keeps when it restyles it (sites
+    drop "https://" and "www." and shorten long paths)."""
+    rest = _ADDRESS_PREFIX_RE.sub("", address)
+    return re.split(r"[/?#]", rest, maxsplit=1)[0]
+
+
+def shows_typed(typed: str, shown: str) -> bool:
+    """Does a rich text field showing ``shown`` hold what was ``typed``?
+
+    The text must be there in order; of each web or e-mail address only the
+    host must be, since sites show addresses as links, shortened or not.
+    """
+    have = _plain(shown)
+    pieces: List[str] = []
+    last = 0
+    for start, end in human.address_spans(typed):
+        pieces.extend((typed[last:start], _address_host(typed[start:end])))
+        last = end
+    pieces.append(typed[last:])
+    position = 0
+    for piece in map(_plain, pieces):
+        if not piece:
+            continue
+        found = have.find(piece, position)
+        if found < 0:
+            return False
+        position = found + len(piece)
+    return True
+
+
+async def _editor_text(locator: Any) -> Optional[str]:
+    try:
+        text = await locator.evaluate(EDITOR_TEXT_JS, EDITOR_TEXT_MAX, timeout=2000)
+    except Exception:
+        return None
+    return text if isinstance(text, str) else None
+
+
+def _typing_key(tab: Any, text: str) -> Optional[str]:
+    """What identifies "this text typed into this page" (a hash: the text
+    itself is never kept), or None for short texts."""
+    plain = _plain(text)
+    if len(plain) < TYPE_REPEAT_MIN_CHARS:
+        return None
+    parts = urlsplit(_page_url(tab))
+    where = f"{parts.scheme}://{parts.netloc}{parts.path}"
+    data = f"{where}\n{plain}".encode("utf-8", "surrogatepass")
+    return hashlib.sha256(data).hexdigest()
+
+
+def _typing_history(tab: Any) -> Dict[str, Tuple[int, float]]:
+    history = getattr(tab, "typed_history", None)
+    if not isinstance(history, dict):
+        history = {}
+        try:
+            tab.typed_history = history
+        except Exception:
+            pass
+    return history
+
+
+def _times_typed(tab: Any, key: str) -> int:
+    """How often this text was typed into this page in the last
+    TYPE_REPEAT_WINDOW_S."""
+    history = _typing_history(tab)
+    now = time.monotonic()
+    for old, (_count, first) in list(history.items()):
+        if now - first > TYPE_REPEAT_WINDOW_S:
+            del history[old]
+    entry = history.get(key)
+    return entry[0] if entry else 0
+
+
+def _note_typed(tab: Any, key: str) -> None:
+    history = _typing_history(tab)
+    count, first = history.get(key, (0, time.monotonic()))
+    history[key] = (count + 1, first)
+
+
 async def _typed_state(locator: Any) -> str:
     try:
         state = await locator.evaluate(TYPED_CHECK_JS, timeout=2000)
@@ -1721,9 +1837,28 @@ async def type_text(
 
     Date, time, month, week, colour and slider inputs are set as a whole in
     their HTML value format instead, and the value is checked. A text field
-    still empty after typing is reported as a failure.
+    still empty after typing is reported as a failure. A rich text field
+    (a post or message box) is read back after typing and the result says
+    whether it holds the whole text. The same text is typed into the same
+    page at most TYPE_REPEAT_LIMIT times within TYPE_REPEAT_WINDOW_S.
     """
     page = tab.page
+    repeat_key = _typing_key(tab, text)
+    typed_before = _times_typed(tab, repeat_key) if repeat_key else 0
+    if typed_before >= TYPE_REPEAT_LIMIT:
+        minutes = int(TYPE_REPEAT_WINDOW_S // 60)
+        raise MiniBrowserError(
+            "MINI_BROWSER_INVALID_INPUT",
+            detail=(
+                f"You already typed this same text into this page {typed_before} "
+                f"times in the last {minutes} minutes, so it was not typed again. "
+                "Sites reformat what you type (web addresses become links, a link "
+                "preview appears, @mentions and #tags are styled), so the field "
+                "does not look exactly like your text; that is not a mistake. "
+                "Check the field with mini_browser_read, then continue (for "
+                "example press the Post button) or ask the user."
+            ),
+        )
     locator = await locate(tab, element_id)
     info = await _field_info(locator, element_id)
     problem = _not_typeable(info)
@@ -1810,8 +1945,16 @@ async def type_text(
                 detail="typing was interrupted because the page changed",
             )
         note = await after_action(page, watch, core=core)
+        shown: Optional[str] = None
         if text.strip() and not submit and not watch.navigated:
-            if await _typed_state(locator) == "empty":
+            if info.get("editable"):
+                shown = await _editor_text(locator)
+            empty = (
+                not _plain(shown)
+                if shown is not None
+                else await _typed_state(locator) == "empty"
+            )
+            if empty:
                 raise MiniBrowserError(
                     "MINI_BROWSER_ELEMENT_NOT_INTERACTABLE",
                     element_id=element_id,
@@ -1821,10 +1964,29 @@ async def type_text(
                         "the page before trying again"
                     ),
                 )
+    if repeat_key:
+        _note_typed(tab, repeat_key)
     message = f"Typed {len(text)} characters into element {element_id}"
     if not text and clear:
         message = f"Cleared element {element_id}"
     message += " and pressed Enter." if submit else "."
+    if shown is not None:
+        if shows_typed(text, shown):
+            message += " Checked: the field holds your whole text."
+            if human.address_spans(text):
+                message += FORMATTING_NOTE
+        else:
+            message += (
+                f' The field now shows: "{_short(" ".join(shown.split()), 300)}".'
+                " Compare it with your text before doing anything else; links, "
+                "a link preview and styled @mentions or #tags are normal."
+            )
+    if typed_before == TYPE_REPEAT_LIMIT - 1:
+        message += (
+            f" You have now typed this same text here {TYPE_REPEAT_LIMIT} times: "
+            "if the page keeps changing it, that is the site's formatting. Do "
+            "not type it again."
+        )
     return await _done(core, tab, message + note)
 
 

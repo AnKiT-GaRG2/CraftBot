@@ -28,6 +28,7 @@ from __future__ import annotations
 import asyncio
 import math
 import random
+import re
 import time
 from typing import Any, Awaitable, Callable, List, Optional, Sequence, Tuple
 
@@ -71,6 +72,18 @@ INSERT_CHUNK = 1000
 # Without human-like pauses, keys are sent in runs of this many characters
 # (one call each), so take-control is noticed between runs.
 PLAIN_RUN_CHARS = 8
+# Web and e-mail addresses are inserted whole, the way a person pastes them.
+# Typed key by key, a site that links addresses while you type (Threads, X,
+# chat apps) sees every partial address on the way ("example.co" before
+# "example.com"): it links the wrong one and shows a link preview for it,
+# then swaps the preview as the address grows.
+ADDRESS_RE = re.compile(
+    r"(?:https?://|www\.)[^\s<>\"']+"
+    r"|[\w.+-]+@[\w-]+(?:\.[\w-]+)+"
+    r"|\b[a-z0-9](?:[a-z0-9-]*[a-z0-9])?(?:\.[a-z0-9](?:[a-z0-9-]*[a-z0-9])?)*"
+    r"\.[a-z]{2,}\b(?:/[^\s<>\"']*)?",
+    re.IGNORECASE,
+)
 
 # Wheel scrolling: notches of 70-130 px, 25-70 ms apart.
 WHEEL_STEP = (70, 130)
@@ -232,26 +245,38 @@ def fit_delays(delays: Sequence[float], budget: float = TYPING_BUDGET_S) -> List
     return [delay * factor for delay in delays]
 
 
+def address_spans(text: str) -> List[Tuple[int, int]]:
+    """``(start, end)`` of every web or e-mail address in ``text``."""
+    return [match.span() for match in ADDRESS_RE.finditer(text or "")]
+
+
 def typing_plan(text: str) -> List[Tuple[str, str]]:
     """How ``text`` is entered: ``[("keys", part), ("insert", part), ...]``.
 
     At most HUMAN_TYPED_LIMIT characters are keyed: a short text entirely,
-    a longer one as prefix (keys) + middle (inserted) + suffix (keys). The
-    number of keyed characters never decreases as the text gets longer, so
-    neither does the typing time.
+    a longer one as prefix (keys) + middle (inserted) + suffix (keys). Web
+    and e-mail addresses are always inserted whole, like a paste (see
+    ADDRESS_RE). Text without addresses keys exactly
+    min(len(text), HUMAN_TYPED_LIMIT) characters, so the typing time grows
+    with the length but stays bounded.
     """
     if not text:
         return []
-    if len(text) <= HUMAN_TYPED_LIMIT:
-        return [("keys", text)]
-    middle_end = len(text) - HUMAN_TYPED_SUFFIX
-    plan = [
-        ("keys", text[:HUMAN_TYPED_PREFIX]),
-        ("insert", text[HUMAN_TYPED_PREFIX:middle_end]),
-    ]
-    if HUMAN_TYPED_SUFFIX > 0:
-        plan.append(("keys", text[middle_end:]))
-    return [(mode, part) for mode, part in plan if part]
+    keyed = [True] * len(text)
+    if len(text) > HUMAN_TYPED_LIMIT:
+        for index in range(HUMAN_TYPED_PREFIX, len(text) - HUMAN_TYPED_SUFFIX):
+            keyed[index] = False
+    for start, end in address_spans(text):
+        for index in range(start, end):
+            keyed[index] = False
+    plan: List[Tuple[str, str]] = []
+    for char, is_keyed in zip(text, keyed):
+        mode = "keys" if is_keyed else "insert"
+        if plan and plan[-1][0] == mode:
+            plan[-1] = (mode, plan[-1][1] + char)
+        else:
+            plan.append((mode, char))
+    return plan
 
 
 def scroll_steps(total: float, rng: Any = None) -> List[int]:

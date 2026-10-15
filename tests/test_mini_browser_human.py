@@ -452,3 +452,67 @@ def test_publish_never_raises():
         publish_pointer=broken,
     )
     asyncio.run(human.publish(core, _tab(), 1, 2, "move"))
+
+
+# ── addresses are inserted whole (Threads link-preview loop) ────────────────
+
+
+@pytest.mark.parametrize(
+    "text, plan",
+    [
+        (
+            "Read https://example.com/news today!",
+            [
+                ("keys", "Read "),
+                ("insert", "https://example.com/news"),
+                ("keys", " today!"),
+            ],
+        ),
+        (
+            "mail bob.smith+x@mail.example.co.jp now",
+            [
+                ("keys", "mail "),
+                ("insert", "bob.smith+x@mail.example.co.jp"),
+                ("keys", " now"),
+            ],
+        ),
+        (
+            "see example.com and www.foo.org/a ok",
+            [
+                ("keys", "see "),
+                ("insert", "example.com"),
+                ("keys", " and "),
+                ("insert", "www.foo.org/a"),
+                ("keys", " ok"),
+            ],
+        ),
+        ("e.g. 3.14 is pi; v1.2 done", [("keys", "e.g. 3.14 is pi; v1.2 done")]),
+    ],
+)
+def test_typing_plan_inserts_addresses_whole(text, plan):
+    """Typed key by key, a site that links addresses while you type sees
+    every partial address ("example.co") and previews the wrong site."""
+    assert human.typing_plan(text) == plan
+
+
+def test_a_long_text_never_types_an_address_key_by_key():
+    url = "https://www.threads.net/@someone/post/ABC123"
+    text = "a" * 30 + " " + url + " " + "b" * 80
+    plan = human.typing_plan(text)
+    assert "".join(part for _mode, part in plan) == text
+    assert all(url not in part for mode, part in plan if mode == "keys")
+    assert not any(
+        part and url.startswith(part.strip()) and len(part.strip()) > 4
+        for mode, part in plan
+        if mode == "keys"
+    )
+
+
+def test_typing_an_address_sends_it_in_one_piece(fast):
+    core, _ = _core()
+    tab = _tab()
+    text = "Look https://example.com/a now"
+    asyncio.run(human.type_text(core, tab, text))
+    calls = [(name, args[0]) for name, args, _k in tab.page.keyboard.calls]
+    assert ("insert_text", "https://example.com/a") in calls
+    assert "".join(chunk for _name, chunk in calls) == text

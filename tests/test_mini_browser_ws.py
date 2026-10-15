@@ -1959,6 +1959,7 @@ def test_settings_defaults_when_absent(monkeypatch):
         "adblock": True,
         "humanlike": True,
         "show_cursor": True,
+        "sound": True,
         "max_fps": 12,
         "jpeg_quality": 70,
         "search_url": "https://duckduckgo.com/?q={query}",
@@ -2036,6 +2037,7 @@ SETTING_SAMPLES = (
     ]
     + [("locale", value) for value in (" ja_JP ", "", "en-US", "x" * 40, "a b", 5)]
     + [("channel", value) for value in ("MSEdge", "", "firefox", None)]
+    + [("sound", value) for value in ("off", "true", 0, True, "loud")]
 )
 
 

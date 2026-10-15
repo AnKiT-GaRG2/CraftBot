@@ -93,7 +93,7 @@ def reload_settings() -> None:
 
     Live settings (ad blocking, frame rate and quality, human-like input,
     per-agent tab limit, idle shutdown, search page, file URLs) apply at
-    once; launch settings (headless, channel, locale) at the next start.
+    once; launch settings (headless, channel, locale, sound) at the next start.
     A no-op when the browser thread never started: the browser reads the
     settings when it starts.
     """

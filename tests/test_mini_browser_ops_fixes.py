@@ -1030,3 +1030,96 @@ def test_screenshots_cover_password_fields_even_after_a_reveal(
     assert grey.isdisjoint(_colors(shot, NAME_BOX))
     # The cover is only in the agent's image, never left on the page.
     assert len(_colors(after, FIELD_BOXES["pw"])) > 1
+
+
+# ── Threads: link previews and the delete-and-retype loop ───────────────────
+
+# A post box that behaves like Threads': every address it sees while you
+# type gets a link preview, and after a pause it turns addresses into links.
+POST_BOX = (
+    "<div id='ed' contenteditable='true' aria-label='Start a thread'"
+    " style='width:600px;min-height:80px;border:1px solid #999'></div>"
+    "<div id='preview'></div><script>"
+    "window.previews = [];"
+    "const ed = document.getElementById('ed');"
+    r"const URLS = /https?:\/\/[^\s]+/g;"
+    "let timer = null;"
+    "ed.addEventListener('input', () => {"
+    "  for (const m of ed.innerText.matchAll(URLS)) {"
+    "    if (!window.previews.includes(m[0])) window.previews.push(m[0]);"
+    "    document.getElementById('preview').textContent = 'Preview: ' + m[0];"
+    "  }"
+    "  clearTimeout(timer);"
+    "  timer = setTimeout(() => {"
+    "    if (ed.querySelector('a')) return;"
+    "    ed.innerHTML = ed.innerText.replace(URLS, (u) => '<a href=\"' + u + '\">' + u + '</a>');"
+    "  }, 150);"
+    "});"
+    "</script>"
+)
+
+
+@pytest.mark.parametrize("humanlike", [False, True])
+def test_a_post_box_only_ever_sees_the_whole_address(browser, fast_human, humanlike):
+    text = "Big news today https://example.com/news check it out"
+
+    async def scenario(core, tab):
+        obs = await observe(core, tab, compact=True)
+        box = element(obs, "Start a thread")
+        result = await ops.type_text(core, tab, element_id=box, text=text)
+        previews = await tab.page.evaluate("window.previews")
+        linked = await tab.page.evaluate("document.querySelectorAll('#ed a').length")
+        return result, previews, linked
+
+    result, previews, linked = run(
+        browser, POST_BOX, scenario, core=FakeCore(humanlike=humanlike)
+    )
+    assert previews == ["https://example.com/news"]  # never a partial address
+    assert linked == 1  # the site made it a link, as Threads does
+    assert "Checked: the field holds your whole text." in result["message"]
+    assert "not a typing mistake" in result["message"]
+
+
+def test_shows_typed_allows_site_formatting_but_not_missing_text():
+    typed = "Big news https://www.example.com/news/2026/10/a-long-path today"
+    assert ops.shows_typed(typed, typed)
+    # The address shown as a shortened link, no-break spaces, a line break.
+    assert ops.shows_typed(typed, "Big news example.com/news/2026/… \ntoday")
+    assert not ops.shows_typed(typed, "Big news today")  # the address is gone
+    assert not ops.shows_typed(typed, "Big news https://www.example.com/news")
+    assert not ops.shows_typed("hello world", "world hello")  # order matters
+
+
+def test_the_same_text_is_not_typed_into_a_page_a_fourth_time(browser):
+    html = "<textarea id='t' aria-label='Post'></textarea>"
+    text = "This is my post about the new release!"
+
+    async def scenario(core, tab):
+        messages = []
+        for _ in range(ops.TYPE_REPEAT_LIMIT):
+            obs = await observe(core, tab, compact=True)
+            result = await ops.type_text(
+                core, tab, element_id=element(obs, "Post"), text=text
+            )
+            messages.append(result["message"])
+        await tab.page.evaluate("document.getElementById('t').value = ''")
+        obs = await observe(core, tab, compact=True)
+        refused = await expect_error(
+            ops.type_text(core, tab, element_id=element(obs, "Post"), text=text),
+            "MINI_BROWSER_INVALID_INPUT",
+        )
+        value = await tab.page.evaluate("document.getElementById('t').value")
+        other = await ops.type_text(
+            core,
+            tab,
+            element_id=element(obs, "Post"),
+            text="A different post entirely.",
+        )
+        return messages, refused, value, other
+
+    messages, refused, value, other = run(browser, html, scenario)
+    assert "this same text here" not in messages[0]
+    assert f"typed this same text here {ops.TYPE_REPEAT_LIMIT} times" in messages[-1]
+    assert "already typed this same text" in refused.fields["detail"]
+    assert value == ""  # the fourth time typed nothing
+    assert other["status"] == "success"  # other text is fine

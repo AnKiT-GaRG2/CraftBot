@@ -65,6 +65,7 @@ class MiniBrowserSettings:
     adblock: bool = True
     humanlike: bool = True
     show_cursor: bool = True
+    sound: bool = True  # False = Chromium starts muted (applies at the next start)
     max_fps: int = 12
     jpeg_quality: int = 70
     search_url: str = DEFAULT_SEARCH_URL

@@ -406,8 +406,8 @@ class BrowserCore:
 
         Live settings (ad blocking, stream quality and frame rate, human-like
         input, the per-agent tab limit, idle shutdown, search page, file
-        URLs) apply at once; launch settings (headless, channel, locale) at
-        the next start of the browser. Open tabs are never closed.
+        URLs) apply at once; launch settings (headless, channel, locale,
+        sound) at the next start of the browser. Open tabs are never closed.
         """
         try:
             self.spawn(self.reload_settings_now())
@@ -635,6 +635,10 @@ class BrowserCore:
         }
         if channel:
             kwargs["channel"] = channel
+        if self.settings.sound:
+            # Playwright starts Chromium with --mute-audio by default: pages
+            # could not play any sound.
+            kwargs["ignore_default_args"] = ["--mute-audio"]
         if channel in (None, "chromium"):
             # Headless Chromium says "HeadlessChrome/x.y.z.w"; sites treat that
             # as a bot. Present the real version the way Chrome does.

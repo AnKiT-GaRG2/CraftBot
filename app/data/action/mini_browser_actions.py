@@ -276,9 +276,12 @@ async def mini_browser_click(input_data: dict) -> dict:
         "is cleared first unless clear=false; submit=true presses Enter "
         "afterwards (e.g. to run a search). Date / time / month / week / "
         "colour / slider fields take their standard value: 2026-10-01, 14:30, "
-        "2026-10-01T14:30, 2026-10, 2026-W40, #1a73e8, 50. Never type "
-        "passwords with this action (inputs are logged): use "
-        "mini_browser_login."
+        "2026-10-01T14:30, 2026-10, 2026-W40, #1a73e8, 50. Web addresses are "
+        "entered whole, like a paste. For post and message boxes the result "
+        "says whether the whole text is in the field; a site turning "
+        "addresses into links or adding a link preview is normal, so do not "
+        "retype. Never type passwords with this action (inputs are logged): "
+        "use mini_browser_login."
     ),
     mode="ALL",
     execution_mode="internal",

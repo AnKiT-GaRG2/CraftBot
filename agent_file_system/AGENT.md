@@ -1922,9 +1922,10 @@ file_index:
   prewarm_all_drives: bool       (build the find_files index for all drives at boot)
 
 mini_browser:                    (hot-reloaded: applies at once, except headless / channel /
-                                  locale, which apply at the browser's next start)
+                                  locale / sound, which apply at the browser's next start)
   headless: bool                 (default true; false opens a visible window)
   adblock / humanlike / show_cursor / allow_file_urls: bool   (defaults true / true / true / false)
+  sound: bool                    (default true; false starts the browser muted)
   max_fps: int                   (default 12, 1-30)     jpeg_quality: int (default 70, 30-95)
   search_url: string             (default "https://duckduckgo.com/?q={query}")
   max_agent_tabs: int            (default 6 per agent, 1-20)
