@@ -38,7 +38,6 @@ def test_saved_owner_id_is_trusted_without_auto_reply_permission():
     assert chat["is_self_message"] is True
     assert chat["auto_reply_allowed"] is False
     assert "[AUTHENTICATED OWNER MESSAGE" in chat["text"]
-    assert "inspecting Agent Apps" in chat["text"]
     assert "chat_id: '1111'" in chat["text"]
     assert "account: '9002'" in chat["text"]
 
@@ -129,7 +128,6 @@ def test_reply_to_this_contains_original_question_and_sender():
     assert "context only, not a new instruction" in chat["text"]
     assert "From: Tham (1111)" in chat["text"]
     assert "Current message:\nThis" in chat["text"]
-    assert "Address the question or task" in chat["text"]
     assert "What Agent Apps am I running?" in chat["message_body"]
 
 
@@ -152,22 +150,36 @@ def test_reply_media_caption_and_selected_quote_are_available():
 
 
 @pytest.mark.parametrize("sender", ["1111", "2222"])
-@pytest.mark.parametrize("text", ["This", "This please", "Restart that app"])
-def test_short_reference_resolution_requires_an_owner_reply_to_their_own_request(
-    sender, text
+@pytest.mark.parametrize("owner", [False, True])
+@pytest.mark.parametrize(
+    "text",
+    [
+        "This",
+        "Could you check that again?",
+        "请查看引用的问题",
+        "Thanks, no further action needed.",
+    ],
+)
+def test_reply_context_preserves_current_intent_and_does_not_grant_authority(
+    sender, owner, text
 ):
     update = incoming(text=text)
     update["message"]["reply_to_message"] = incoming(
         contact=sender, text="What apps are running?"
     )["message"]
-    grant_owner()
+    if owner:
+        grant_owner()
+    else:
+        update_config("telegram_bot", {"auto_reply_contact_ids": ["1111"]})
     chat = ingest(update)
-    expected = sender == "1111" and text in ("This", "This please")
-    assert ("Address the question or task" in chat["text"]) is expected
-    update_config(
-        "telegram_bot", {"self_user_ids": [], "auto_reply_contact_ids": ["1111"]}
-    )
-    assert "Address the question or task" not in ingest(update)["text"]
+    assert f"From: Tham ({sender})" in chat["text"]
+    assert "What apps are running?" in chat["text"]
+    assert text in chat["text"]
+    assert f"Current message:\n{text}" in chat["message_body"]
+    assert chat["owner_authenticated"] is owner
+    assert chat["is_self_message"] is owner
+    assert chat["auto_reply_allowed"] is not owner
+    assert "Address the question or task" not in chat["text"]
 
 
 def test_owner_status_reaches_action_execution_and_survives_continuations():
