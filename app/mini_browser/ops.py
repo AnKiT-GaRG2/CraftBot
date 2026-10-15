@@ -349,8 +349,10 @@ TYPED_CHECK_JS = (
 # or null for any other element.
 EDITOR_TEXT_JS = r"""
 (el, max) => {
-  const ctl = (el.tagName === 'LABEL' && el.control) ? el.control : el;
+  let ctl = (el.tagName === 'LABEL' && el.control) ? el.control : el;
   if (!ctl.isContentEditable) return null;
+  // The whole editor, also when the element is one of its paragraphs.
+  while (ctl.parentElement && ctl.parentElement.isContentEditable) ctl = ctl.parentElement;
   return String(ctl.innerText || ctl.textContent || '').slice(0, max);
 }
 """
@@ -1724,6 +1726,19 @@ def _address_host(address: str) -> str:
     return re.split(r"[/?#]", rest, maxsplit=1)[0]
 
 
+def _address_pieces(text: str) -> List[str]:
+    """``text`` split around its web and e-mail addresses, each address
+    reduced to its host: ``"Read https://x.com/a now"`` -> ``["Read ",
+    "x.com", " now"]``."""
+    pieces: List[str] = []
+    last = 0
+    for start, end in human.address_spans(text):
+        pieces.extend((text[last:start], _address_host(text[start:end])))
+        last = end
+    pieces.append(text[last:])
+    return pieces
+
+
 def shows_typed(typed: str, shown: str) -> bool:
     """Does a rich text field showing ``shown`` hold what was ``typed``?
 
@@ -1731,14 +1746,8 @@ def shows_typed(typed: str, shown: str) -> bool:
     host must be, since sites show addresses as links, shortened or not.
     """
     have = _plain(shown)
-    pieces: List[str] = []
-    last = 0
-    for start, end in human.address_spans(typed):
-        pieces.extend((typed[last:start], _address_host(typed[start:end])))
-        last = end
-    pieces.append(typed[last:])
     position = 0
-    for piece in map(_plain, pieces):
+    for piece in map(_plain, _address_pieces(typed)):
         if not piece:
             continue
         found = have.find(piece, position)
@@ -1758,8 +1767,9 @@ async def _editor_text(locator: Any) -> Optional[str]:
 
 def _typing_key(tab: Any, text: str) -> Optional[str]:
     """What identifies "this text typed into this page" (a hash: the text
-    itself is never kept), or None for short texts."""
-    plain = _plain(text)
+    itself is never kept), or None for short texts. Addresses count by their
+    host, so a retry that only adds or drops "https://" is the same text."""
+    plain = _plain("".join(_address_pieces(text)))
     if len(plain) < TYPE_REPEAT_MIN_CHARS:
         return None
     parts = urlsplit(_page_url(tab))

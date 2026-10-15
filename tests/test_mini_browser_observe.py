@@ -731,3 +731,41 @@ def test_a_hanging_frame_never_holds_up_the_observation(monkeypatch):
         loop_time.close()
     assert elapsed < 2.0
     assert result["elements"] == ['[0] frame "Widget" (its contents could not be read)']
+
+
+# ── post and message boxes: the whole post, never an address cut in half ──
+
+
+def test_a_post_box_shows_the_whole_post_and_never_half_an_address(browser):
+    """The value used to stop after 40 characters, often inside a link
+    ("https://example.c…"), which an agent took for its own typo."""
+    address = "https://example.com/a-long-address/here"
+    short = f"Big news today {address} check it out"
+    # 290 characters of words, then the address across the 300 limit.
+    long = ("word " * 58) + address + " " + ("tail " * 40).strip()
+    html = (
+        f"<div contenteditable='true' aria-label='Post box'>{short}</div>"
+        f"<textarea aria-label='Reply'>{long}</textarea>"
+    )
+    obs, _ = _observe(browser, html)
+    post = next(e for e in obs["elements"] if '"Post box"' in e)
+    reply = next(e for e in obs["elements"] if '"Reply"' in e)
+    assert f'value="{short}"' in post  # a normal post is shown whole
+    shown = reply.split('value="', 1)[1].split('"', 1)[0]
+    assert shown == ("word " * 58).strip() + "…"  # cut before the address
+    assert f"({len(long)} characters in all)" in reply
+
+
+def test_format_element_cuts_long_text_between_words():
+    address = "https://example.com/very/long/address"
+    text = "a " * 50 + address + " end"  # the address spans the 120 limit
+    tight = obs_mod.format_element(
+        {"n": 1, "kind": "textbox", "label": "Post", "value": text}, tight=True
+    )
+    shown = tight.split('value="', 1)[1].split('"', 1)[0]
+    assert shown == ("a " * 50).strip() + "…"
+    # Other fields keep their short limit.
+    plain = obs_mod.format_element(
+        {"n": 2, "kind": "input:text", "label": "Name", "value": "z" * 200}
+    )
+    assert 'value="' + "z" * 120 + '"' in plain

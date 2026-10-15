@@ -1123,3 +1123,30 @@ def test_the_same_text_is_not_typed_into_a_page_a_fourth_time(browser):
     assert "already typed this same text" in refused.fields["detail"]
     assert value == ""  # the fourth time typed nothing
     assert other["status"] == "success"  # other text is fine
+
+
+def test_a_retry_that_only_changes_how_an_address_is_written_is_the_same_text():
+    tab = SimpleNamespace(page=SimpleNamespace(url="https://www.threads.net/"))
+    key = ops._typing_key(tab, "Big news https://example.com/news check it out")
+    assert key == ops._typing_key(tab, "Big  news example.com/news check it out")
+    assert key == ops._typing_key(tab, "big news www.example.com/news CHECK it out")
+    assert key != ops._typing_key(tab, "Big news https://other.org/news check it out")
+    elsewhere = SimpleNamespace(page=SimpleNamespace(url="https://x.com/compose"))
+    assert key != ops._typing_key(
+        elsewhere, "Big news https://example.com/news check it out"
+    )
+    assert ops._typing_key(tab, "short text") is None
+
+
+def test_the_read_back_covers_the_whole_editor(browser):
+    html = (
+        "<div contenteditable='true' aria-label='Post'><p id='first'>Line one</p>"
+        "<p>Line two https://example.com/x</p></div>"
+    )
+
+    async def scenario(core, tab):
+        inner = tab.page.locator("#first")
+        return await inner.evaluate(ops.EDITOR_TEXT_JS, 1000)
+
+    text = run(browser, html, scenario)
+    assert "Line one" in text and "Line two https://example.com/x" in text

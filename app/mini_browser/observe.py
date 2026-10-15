@@ -216,6 +216,20 @@ SNAPSHOT_JS = (
     return s.slice(0, end) + '…';
   };
   const clean = (s, n) => cut(String(s == null ? '' : s).replace(/\s+/g, ' ').trim(), n);
+  // A post or message box (textarea, rich text): up to LONG_VALUE characters,
+  // cut between words, so a web address is never shown cut in half (the
+  // agent took "https://example.c…" for its own typo); ``value_len`` = the
+  // full length when cut.
+  const LONG_VALUE = 300;
+  const longValue = (rec, text) => {
+    const t = String(text == null ? '' : text).replace(/\s+/g, ' ').trim();
+    if (!t) return;
+    if (t.length <= LONG_VALUE) { rec.value = t; return; }
+    let end = t.lastIndexOf(' ', LONG_VALUE);
+    if (end < LONG_VALUE * 0.6) end = LONG_VALUE;
+    rec.value = cut(t, end);
+    rec.value_len = t.length;
+  };
   const safeMatches = (el, sel) => { try { return el.matches(sel); } catch (e) { return false; } };
   const composedContains = (anc, el) => {
     for (let n = el; n; n = parentOf(n)) if (n === anc) return true;
@@ -805,7 +819,7 @@ SNAPSHOT_JS = (
     } else if (tag === 'TEXTAREA') {
       if (secretField(ctl)) { /* never read */ }
       else if (maskedField(ctl)) { if (ctl.value) rec.has_value = true; }
-      else if (ctl.value) rec.value = cut(ctl.value.replace(/\s+/g, ' ').trim(), 40);
+      else if (ctl.value) longValue(rec, ctl.value);
       if (ctl.readOnly) states.push('read-only');
     } else if (tag === 'SELECT') {
       const opts = Array.from(ctl.options);
@@ -814,8 +828,7 @@ SNAPSHOT_JS = (
       rec.options = opts.slice(0, 10).map((o) => clean(o.label || o.text || o.value, 30));
       rec.more = Math.max(0, opts.length - 10);
     } else if (c.kind === 'editable' || ((c.kind === 'textbox' || c.kind === 'searchbox' || c.kind === 'combobox') && ctl.isContentEditable)) {
-      const t = clean(ctl.innerText, 41);
-      if (t) rec.value = cut(t, 40);
+      longValue(rec, ctl.innerText);
     } else if (c.kind === 'slider' || c.kind === 'spinbutton') {
       const v = ctl.getAttribute('aria-valuetext') || ctl.getAttribute('aria-valuenow');
       if (v) rec.value = clean(v, 40);
@@ -883,6 +896,24 @@ def _quote(value: Any, limit: int = 120) -> str:
     return _one_line(value, limit).replace('"', "'")
 
 
+# Kinds whose value is a post or message (see longValue in SNAPSHOT_JS).
+_LONG_TEXT_KINDS = frozenset(
+    {"textarea", "editable", "textbox", "searchbox", "combobox"}
+)
+
+
+def _words(text: Any, limit: int) -> str:
+    """``text`` on one line, at most ``limit`` characters, cut between words
+    (so a web address is never shown cut in half)."""
+    line = " ".join(str(text).split())
+    if len(line) <= limit:
+        return line
+    end = line.rfind(" ", 0, limit)
+    if end < limit * 0.6:
+        end = limit
+    return line[:end].rstrip("…") + "…"
+
+
 def _tight_href(href: str) -> str:
     """A link target without its query / fragment (kept when that is all)."""
     text = str(href)
@@ -922,7 +953,11 @@ def format_element(
             tail = f", +{more} more" if more else ""
             parts.append(f"(options: {', '.join(options)}{tail})")
     elif record.get("value") not in (None, ""):
-        parts.append(f'value="{_quote(record["value"], 40 if tight else 120)}"')
+        if kind in _LONG_TEXT_KINDS:
+            shown = _words(record["value"], 120 if tight else 302)
+            parts.append(f'value="{_quote(shown, len(shown))}"')
+        else:
+            parts.append(f'value="{_quote(record["value"], 40 if tight else 120)}"')
     href = record.get("href")
     if href:
         shown = _quote(_tight_href(href), 40) if tight else _quote(href, 80)
@@ -934,6 +969,9 @@ def format_element(
         states.insert(0, f'in "{_quote(context, limit)}"')
     if record.get("has_value"):
         states.insert(0, "has value")
+    value_len = record.get("value_len")
+    if isinstance(value_len, int) and value_len > 0:
+        states.append(f"{value_len} characters in all")
     frame_note = record.get("frame_note")
     if frame_note:
         states.append(str(frame_note))
