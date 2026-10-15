@@ -282,9 +282,17 @@ async def _core_state(core: Any) -> Dict[str, Any]:
     return core.state()
 
 
-async def _copy_selection(core: Any, tab_id: str) -> str:
-    """The tab's selected text, minus any password autofill typed into it."""
-    text = await core.ui_copy_selection(tab_id)
+async def _copy_selection(
+    core: Any, tab_id: str, cut_request: Optional[str] = None
+) -> str:
+    """The tab's selected text, minus any password autofill typed into it.
+
+    ``cut_request``: the copy is the first half of a cut (see
+    BrowserCore.ui_copy_selection)."""
+    if cut_request:
+        text = await core.ui_copy_selection(tab_id, cut_request=cut_request)
+    else:
+        text = await core.ui_copy_selection(tab_id)
     if not isinstance(text, str):
         return ""
     tab = (getattr(core, "tabs", None) or {}).get(tab_id)
@@ -433,6 +441,13 @@ def _input_event(event: Any) -> Optional[Dict[str, Any]]:
             "kind": "key",
             "key": key,
             "modifiers": {name: modifiers.get(name) is True for name in _MODIFIER_KEYS},
+        }
+    if kind == "cut":
+        # Delete what a cut copied (see BrowserCore._cut); queued like any
+        # other input, so it runs after what the user did before it.
+        return {
+            "kind": "cut",
+            "requestId": _short_id(event.get("requestId"), "requestId", required=True),
         }
     if kind == "text":
         text = event.get("text")
@@ -1416,10 +1431,13 @@ class MiniBrowserWS:
         # Echoed back, so the page matches the reply to its request (a cut
         # deletes the selection only once ITS copy has arrived).
         request_id = _short_id(data.get("requestId"), "requestId", required=False)
+        # The first half of a cut: the delete follows as a "cut" input event
+        # with the same requestId, once the text is on the user's clipboard.
+        cut_request = request_id if data.get("cut") is True else None
         host = self._running_host()
         # The selection may come from input still on its way (a drag, Ctrl+A).
         await self._settle_input(ws, tab_id, drop_late=False)
-        text = await host.call(lambda core: _copy_selection(core, tab_id))
+        text = await host.call(lambda core: _copy_selection(core, tab_id, cut_request))
         reply: Dict[str, Any] = {"text": text}
         if request_id is not None:
             reply["requestId"] = request_id

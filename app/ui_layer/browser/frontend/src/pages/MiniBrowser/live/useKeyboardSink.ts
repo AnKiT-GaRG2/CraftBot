@@ -5,7 +5,7 @@ import { clipboardConsumed } from '../../../store/slices/miniBrowserSlice'
 import type { MiniBrowserTab } from '../../../types'
 import { copyTextWhenReady } from '../clipboard'
 import { sendLive } from '../useMiniBrowserSocket'
-import { classifyKey, cutShortcut } from './keyboard'
+import { classifyKey } from './keyboard'
 import type { LiveInput } from './useLiveInput'
 
 const MAX_PASTE_CHARS = 20_000
@@ -96,7 +96,7 @@ export function useKeyboardSink({
     input.flushText()
     copySeqRef.current += 1
     const requestId = `copy-${copySeqRef.current}`
-    if (!sendLive('mini_browser_copy', { tabId, requestId })) return
+    if (!sendLive('mini_browser_copy', { tabId, requestId, cut })) return
     const previous = copyRef.current
     if (previous) {
       previous.superseded = true
@@ -127,12 +127,14 @@ export function useKeyboardSink({
     // Started inside the key press, which is what lets the browser write.
     void copyTextWhenReady(text).then((outcome) => {
       if (outcome === 'failed' && !pending.superseded) onCopyFailed()
-      // Cut = copy, then let the page delete the selection itself, in the
-      // tab it was copied from. Only once this copy is on the clipboard: sent
-      // any earlier, the delete could reach the page before the copy had
-      // read the selection, and the text would be lost.
+      // Cut = copy, then delete, in the tab it was copied from. Only once
+      // this copy is on the clipboard: sent any earlier, the delete could
+      // reach the page before the copy had read the selection, and the text
+      // would be lost. The delete is queued behind whatever the user did
+      // meanwhile, and the backend skips it unless the selection is still
+      // exactly what was copied (they may have moved to another field).
       if (cut && outcome === 'copied' && !pending.superseded) {
-        input.sendTo(tabId, { kind: 'key', key: 'x', modifiers: cutShortcut() })
+        input.sendTo(tabId, { kind: 'cut', requestId })
       }
     })
   }, [input, onCopyFailed, target])

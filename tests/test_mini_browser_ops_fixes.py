@@ -1150,3 +1150,76 @@ def test_the_read_back_covers_the_whole_editor(browser):
 
     text = run(browser, html, scenario)
     assert "Line one" in text and "Line two https://example.com/x" in text
+
+
+# ── PR re-review: a dropdown choice after take-control ──────────────────────
+
+SIZE_SELECT = (
+    "<select id='s' aria-label='Size'><option value='a'>A</option>"
+    "<option value='b'>B</option></select><script>window.changes = 0;"
+    "document.getElementById('s').addEventListener('change', () => window.changes++);"
+    "</script>"
+)
+
+
+def test_a_dropdown_choice_never_lands_after_take_control(browser, monkeypatch):
+    """The option disappears between matching and selecting and comes back
+    400 ms later; the user takes control meanwhile. Playwright's
+    select_option waited for it inside the driver and selected it anyway."""
+    real = ops._select_now
+
+    async def gap_then_select(tab, locator, element_id, value):
+        await tab.page.evaluate(
+            "() => { const s = document.getElementById('s'); const b = s.options[1];"
+            " b.remove(); setTimeout(() => s.appendChild(b), 400); }"
+        )
+
+        async def user_takes_control():
+            await asyncio.sleep(0.1)
+            tab.user_control = True
+
+        asyncio.ensure_future(user_takes_control())
+        return await real(tab, locator, element_id, value)
+
+    monkeypatch.setattr(ops, "_select_now", gap_then_select)
+
+    async def scenario(core, tab):
+        obs = await observe(core, tab, compact=True)
+        await expect_error(
+            ops.select_option(core, tab, element_id=element(obs, '"Size"'), value="b"),
+            "MINI_BROWSER_USER_IN_CONTROL",
+        )
+        await asyncio.sleep(0.8)  # the option is back by now
+        return await tab.page.evaluate(
+            "[document.getElementById('s').value, window.changes]"
+        )
+
+    assert run(browser, SIZE_SELECT, scenario) == ["a", 0]
+
+
+def test_a_dropdown_option_that_comes_back_is_still_selected(browser, monkeypatch):
+    """Without a takeover, the read-only wait still lets a briefly missing
+    option be selected once it is back (and the page hears the change)."""
+    real = ops._select_now
+
+    async def gap_then_select(tab, locator, element_id, value):
+        await tab.page.evaluate(
+            "() => { const s = document.getElementById('s'); const b = s.options[1];"
+            " b.remove(); setTimeout(() => s.appendChild(b), 300); }"
+        )
+        return await real(tab, locator, element_id, value)
+
+    monkeypatch.setattr(ops, "_select_now", gap_then_select)
+
+    async def scenario(core, tab):
+        obs = await observe(core, tab, compact=True)
+        result = await ops.select_option(
+            core, tab, element_id=element(obs, '"Size"'), value="B"
+        )
+        state = await tab.page.evaluate(
+            "[document.getElementById('s').value, window.changes]"
+        )
+        return result, state
+
+    result, state = run(browser, SIZE_SELECT, scenario)
+    assert result["status"] == "success" and state == ["b", 1]

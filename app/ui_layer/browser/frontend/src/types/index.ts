@@ -1071,3 +1071,5 @@ export type MiniBrowserInputEvent =
   | { kind: 'wheel'; x: number; y: number; dx: number; dy: number }
   | { kind: 'key'; key: string; modifiers?: MiniBrowserKeyModifiers }
   | { kind: 'text'; text: string }
+  /** Delete what the copy with this requestId took (the second half of a cut). */
+  | { kind: 'cut'; requestId: string }

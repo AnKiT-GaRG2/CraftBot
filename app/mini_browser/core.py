@@ -145,6 +145,8 @@ WATCHDOG_INTERVAL_S = 2.0
 TITLE_REFRESH_S = 4.0
 MAX_COPY_CHARS = 20_000
 MAX_TEXT_INPUT = 2000
+# A cut deletes the selection at most this long after its copy was taken.
+CUT_WINDOW_S = 30.0
 WHEEL_LIMIT = 5000.0
 # Our own CDP session keeps (almost) no response bodies: Playwright's has them.
 NETWORK_ENABLE = {"maxTotalBufferSize": 1_000_000, "maxResourceBufferSize": 100_000}
@@ -319,6 +321,9 @@ class BrowserCore:
         # Tabs being opened (reservation token -> owner): they count against
         # the tab limits until they are registered (see _reserve_tab).
         self._opening: Dict[object, Optional[str]] = {}
+        # A cut in progress, per tab: (request id, the text it copied, when).
+        # The delete runs only while the selection is still that text.
+        self._cuts: Dict[str, Tuple[str, str, float]] = {}
         self._adoptions: Set[asyncio.Task] = set()
         self._front_tab: Dict[int, str] = {}  # window id -> its active tab id
         self._tab_ids = itertools.count(1)
@@ -1060,6 +1065,8 @@ class BrowserCore:
                     return
                 self._note_user_input(tab)
                 await _within(page.keyboard.insert_text(text[:MAX_TEXT_INPUT]), limit)
+            elif kind == "cut":
+                await self._cut(tab, event.get("requestId"), limit)
         except asyncio.TimeoutError:
             self._mark_unresponsive(tab)
             raise MiniBrowserError("MINI_BROWSER_PAGE_UNRESPONSIVE") from None
@@ -1187,9 +1194,18 @@ class BrowserCore:
             )
         self._schedule_state()
 
-    async def ui_copy_selection(self, tab_id: str) -> str:
-        """The text selected in a tab (never from a password field)."""
+    async def ui_copy_selection(
+        self, tab_id: str, cut_request: Optional[str] = None
+    ) -> str:
+        """The text selected in a tab (never from a password field).
+
+        ``cut_request``: this copy is the first half of a cut; its text is
+        remembered (in memory only, at most CUT_WINDOW_S) so the delete that
+        follows (``ui_input`` kind "cut") can make sure it deletes exactly
+        what was copied.
+        """
         tab = self._ui_tab(tab_id)
+        self._cuts.pop(tab.id, None)
         try:
             text = await asyncio.wait_for(
                 tab.page.evaluate(_SELECTION_JS), EVALUATE_TIMEOUT_S
@@ -1201,7 +1217,34 @@ class BrowserCore:
             return ""
         if not isinstance(text, str):
             return ""
+        if cut_request and text:
+            self._cuts[tab.id] = (cut_request, text[:MAX_COPY_CHARS], time.monotonic())
         return scrub(text[:MAX_COPY_CHARS], self._secrets())
+
+    async def _cut(self, tab: Tab, request_id: Any, limit: float) -> None:
+        """Delete the selection a cut copied, if it is still selected.
+
+        Runs in the live-input queue, after everything the user typed or
+        clicked before the clipboard write finished: if that moved the focus
+        or the selection, the delete is skipped (it would remove text that is
+        not on the clipboard).
+        """
+        entry = self._cuts.pop(tab.id, None)
+        if (
+            entry is None
+            or entry[0] != request_id
+            or time.monotonic() - entry[2] > CUT_WINDOW_S
+        ):
+            logger.debug("[MiniBrowser] Cut skipped: no matching copy")
+            return
+        current = await _within(tab.page.evaluate(_SELECTION_JS), limit)
+        if not isinstance(current, str) or current[:MAX_COPY_CHARS] != entry[1]:
+            logger.info(
+                "[MiniBrowser] Cut skipped: the selection changed after it was copied"
+            )
+            return
+        self._note_user_input(tab)
+        await _within(tab.page.keyboard.press("ControlOrMeta+x"), limit)
 
     async def set_viewport(self, width: int, height: int) -> None:
         """The CSS viewport of every tab (and of tabs opened later)."""
@@ -1659,24 +1702,24 @@ class BrowserCore:
                 tab = self.tabs.get(self._owner_current.get(owner, ""))
                 if tab is None:
                     raise MiniBrowserError("MINI_BROWSER_TAB_NOT_FOUND", tab="")
-            if tab.owner is None:
-                raise MiniBrowserError(
-                    "MINI_BROWSER_INVALID_INPUT",
-                    detail="That tab belongs to the user; close only your own tabs.",
-                )
-            if tab.owner != owner:
-                raise MiniBrowserError(
-                    "MINI_BROWSER_TAB_OWNED",
-                    tab=self._tab_index(tab),
-                    owner=tab.owner_label or "another agent",
-                )
-            if tab.user_control:
-                # The user is working in it (a CAPTCHA, a form): closing it
-                # would throw that work away.
-                return action_error("MINI_BROWSER_USER_IN_CONTROL"), tab
+            refused = self._close_refusal(tab, owner)
+            if refused is not None:
+                return refused, tab
             index = self._tab_index(tab)
             if len(self.tabs) == 1:
                 await self._open_tab(None)
+                # The replacement took a while to open: the user may have
+                # taken control of the tab (or it changed hands, or closed)
+                # meanwhile. Check again right before closing it.
+                if tab.closed or self.tabs.get(tab.id) is not tab:
+                    return {
+                        "status": "success",
+                        "message": f"Tab {index} is already closed.",
+                        "tabs": self.tabs_payload(owner),
+                    }, None
+                refused = self._close_refusal(tab, owner)
+                if refused is not None:
+                    return refused, tab
             page = tab.page
             await self._close_page(page)
             self._on_page_close(page)
@@ -1689,6 +1732,28 @@ class BrowserCore:
             "MINI_BROWSER_INVALID_INPUT",
             detail="action must be list, new, switch or close.",
         )
+
+    def _close_refusal(self, tab: Tab, owner: str) -> Optional[Dict[str, Any]]:
+        """Why ``owner`` may not close ``tab`` right now (None: it may).
+
+        Raises for a tab that is not the owner's; returns the refusal result
+        while the user controls it (a CAPTCHA, a form: closing it would throw
+        that work away).
+        """
+        if tab.owner is None:
+            raise MiniBrowserError(
+                "MINI_BROWSER_INVALID_INPUT",
+                detail="That tab belongs to the user; close only your own tabs.",
+            )
+        if tab.owner != owner:
+            raise MiniBrowserError(
+                "MINI_BROWSER_TAB_OWNED",
+                tab=self._tab_index(tab),
+                owner=tab.owner_label or "another agent",
+            )
+        if tab.user_control:
+            return action_error("MINI_BROWSER_USER_IN_CONTROL")
+        return None
 
     def _lookup_op(self, op: Any) -> Any:
         if not isinstance(op, str) or not op:
@@ -2548,6 +2613,7 @@ class BrowserCore:
         del self.tabs[tab.id]
         tab.mark_closed(CLOSED_TAB)  # an operation on it ends at once
         self._retire_secrets(tab)
+        self._cuts.pop(tab.id, None)
         self._stream.forget_tab(tab.id)
         self._main_frames.pop(tab.id, None)
         self._pending_docs.pop(tab.id, None)

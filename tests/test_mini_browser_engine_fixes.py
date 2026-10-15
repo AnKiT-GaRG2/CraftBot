@@ -1694,3 +1694,103 @@ def test_the_running_browser_is_not_muted(eng):
         except psutil.Error:
             continue
     assert lines and not any("--mute-audio" in line for line in lines)
+
+
+# ── PR re-review: closing the last tab; a cut whose selection moved ─────────
+
+
+def test_closing_the_last_tab_rechecks_control_after_the_replacement(eng):
+    """The replacement for the last tab is paused while it opens; the user
+    takes control of the agent's tab meanwhile. It must not be closed."""
+    url = eng.site.url("/page?t=Captcha")
+    tab_id = eng.op("last-tab-agent", "goto", url=url)["tab"]["id"]
+
+    async def scenario(core):
+        for other in [t for t in core.tabs.values() if t.id != tab_id]:
+            await core.ui_close_tab(other.id)
+        assert list(core.tabs) == [tab_id]  # the agent's tab is the last one
+        gate, reached = asyncio.Event(), asyncio.Event()
+        real_create = core._create_page
+
+        async def paused_create(context):
+            reached.set()
+            await gate.wait()
+            return await real_create(context)
+
+        core._create_page = paused_create
+        try:
+            closing = asyncio.ensure_future(
+                core.agent_op(
+                    "last-tab-agent", "tabs", {"action": "close", "tab": tab_id}
+                )
+            )
+            await asyncio.wait_for(reached.wait(), 10)
+            await core.ui_control(tab_id, True)  # the user takes over
+            gate.set()
+            result = await asyncio.wait_for(closing, 20)
+        finally:
+            del core._create_page
+        still_open = core.tabs.get(tab_id) is not None
+        await core.ui_control(tab_id, False)
+        return result, still_open, len(core.tabs)
+
+    result, still_open, count = eng.call(scenario)
+    assert result["error_code"] == "MINI_BROWSER_USER_IN_CONTROL", result
+    assert still_open and count == 2  # the user's work is there, plus the new tab
+
+
+CUT_PAGE = "<textarea id='t'>CUT-ME-483</textarea><input id='u'>"
+
+
+async def _select_all_of(page, element_id):
+    await page.evaluate(
+        "(id) => { const el = document.getElementById(id); el.focus();"
+        " el.setSelectionRange(0, el.value.length); }",
+        element_id,
+    )
+
+
+async def _fields(page):
+    return await page.evaluate(
+        "[document.getElementById('t').value, document.getElementById('u').value]"
+    )
+
+
+def test_a_cut_deletes_exactly_what_it_copied(eng):
+    async def scenario(core):
+        tab_id = await core.ui_new_tab(None)
+        page = core.tabs[tab_id].page
+        await page.set_content(CUT_PAGE)
+        await _select_all_of(page, "t")
+        copied = await core.ui_copy_selection(tab_id, cut_request="copy-1")
+        await core.ui_input(tab_id, {"kind": "cut", "requestId": "copy-1"})
+        return copied, await _fields(page)
+
+    copied, fields = eng.call(scenario)
+    assert copied == "CUT-ME-483"
+    assert fields == ["", ""]  # cut: gone from the page, on the clipboard
+
+
+def test_a_cut_is_skipped_when_the_selection_moved_on(eng):
+    """The review's case: after Ctrl+X the user tabbed to another field,
+    typed and selected KEEP-ME before the clipboard write finished. The
+    delete must not erase KEEP-ME (it is not on the clipboard)."""
+
+    async def scenario(core):
+        tab_id = await core.ui_new_tab(None)
+        page = core.tabs[tab_id].page
+        await page.set_content(CUT_PAGE)
+        await _select_all_of(page, "t")
+        await core.ui_copy_selection(tab_id, cut_request="copy-2")
+        await core.ui_input(tab_id, {"kind": "key", "key": "Tab"})
+        await core.ui_input(tab_id, {"kind": "text", "text": "KEEP-ME"})
+        await _select_all_of(page, "u")
+        await core.ui_input(tab_id, {"kind": "cut", "requestId": "copy-2"})
+        skipped = await _fields(page)
+        # A delete for a copy that never happened (or a stale id) does nothing.
+        await core.ui_input(tab_id, {"kind": "cut", "requestId": "copy-2"})
+        return skipped, await _fields(page)
+
+    skipped, again = eng.call(scenario)
+    assert skipped == ["CUT-ME-483", "KEEP-ME"]
+    assert again == ["CUT-ME-483", "KEEP-ME"]

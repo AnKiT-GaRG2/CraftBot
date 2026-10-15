@@ -358,16 +358,28 @@ EDITOR_TEXT_JS = r"""
 """
 
 # Called on an element: find the <option> matching a value or a visible label.
-SELECT_MATCH_JS = r"""
+# The option of a <select> that a value or a visible label names (-1: none).
+_FIND_OPTION_JS = r"""
+  const norm = (s) => String(s == null ? '' : s).replace(/\s+/g, ' ').trim().toLowerCase();
+  const findOption = (opts, wanted) => {
+    const want = norm(wanted);
+    let index = opts.findIndex((o) => o.value === wanted);
+    if (index < 0) index = opts.findIndex((o) => norm(o.label || o.text) === want);
+    if (index < 0) index = opts.findIndex((o) => norm(o.value) === want);
+    return index;
+  };
+"""
+
+SELECT_MATCH_JS = (
+    r"""
 (el, wanted) => {
+"""
+    + _FIND_OPTION_JS
+    + r"""
   const ctl = (el.tagName === 'LABEL' && el.control) ? el.control : el;
   if (ctl.tagName !== 'SELECT') return {native: false};
-  const norm = (s) => String(s == null ? '' : s).replace(/\s+/g, ' ').trim().toLowerCase();
   const opts = Array.from(ctl.options);
-  const want = norm(wanted);
-  let index = opts.findIndex((o) => o.value === wanted);
-  if (index < 0) index = opts.findIndex((o) => norm(o.label || o.text) === want);
-  if (index < 0) index = opts.findIndex((o) => norm(o.value) === want);
+  const index = findOption(opts, wanted);
   return {
     native: true,
     index,
@@ -378,6 +390,32 @@ SELECT_MATCH_JS = r"""
   };
 }
 """
+)
+
+# Called on a <select>: select the option ``wanted`` names, in one step that
+# never waits. The option is found again first, so the selection only
+# happens if it is (still) there and enabled; like Playwright's
+# selectOption, it fires input and change.
+SELECT_APPLY_JS = (
+    r"""
+(el, wanted) => {
+"""
+    + _FIND_OPTION_JS
+    + r"""
+  const ctl = (el.tagName === 'LABEL' && el.control) ? el.control : el;
+  if (!ctl.isConnected || ctl.tagName !== 'SELECT') return 'gone';
+  const opts = Array.from(ctl.options);
+  const index = findOption(opts, wanted);
+  if (index < 0) return 'missing';
+  if (ctl.disabled || opts[index].disabled) return 'disabled';
+  ctl.value = undefined;
+  opts[index].selected = true;
+  ctl.dispatchEvent(new Event('input', {bubbles: true, composed: true}));
+  ctl.dispatchEvent(new Event('change', {bubbles: true}));
+  return 'done';
+}
+"""
+)
 
 SCROLL_STATE_JS = (
     r"""
@@ -2124,6 +2162,40 @@ async def press_key(
     return await _done(core, tab, f"Pressed {' '.join(combos)}{target}.{note}")
 
 
+async def _select_now(tab: Any, locator: Any, element_id: int, value: str) -> None:
+    """Select the option ``value`` names, at once or not at all.
+
+    Playwright's select_option keeps waiting inside the browser driver while
+    the option is missing (even with force), so an option that disappeared
+    and came back could still be selected after the user took control. Here
+    each attempt is one in-page step that finds the option again and selects
+    it only if it is there and enabled; between attempts the wait only
+    reads, and every attempt checks control first (act_on_element).
+    """
+    loop = asyncio.get_running_loop()
+    deadline = loop.time() + ACTION_WAIT_MS / 1000.0
+    while True:
+        state = await act_on_element(
+            tab,
+            locator,
+            element_id,
+            lambda handle: handle.evaluate(SELECT_APPLY_JS, value),
+        )
+        if state == "done":
+            return
+        if state == "gone" or loop.time() >= deadline:
+            what = {
+                "missing": f'its option "{_short(value, 60)}" is gone',
+                "disabled": "it (or that option) is disabled",
+            }.get(state, "it is no longer a dropdown list on the page")
+            raise MiniBrowserError(
+                "MINI_BROWSER_ELEMENT_NOT_INTERACTABLE",
+                element_id=element_id,
+                detail=f"{what}; look at the page again",
+            )
+        await asyncio.sleep(SLEEP_SLICE_S)
+
+
 async def select_option(
     core: Any, tab: Any, *, element_id: int, value: str
 ) -> Dict[str, Any]:
@@ -2168,18 +2240,7 @@ async def select_option(
             if point is not None:
                 await human.move_mouse(core, tab, *point)
                 await human.pause(*human.HOVER_PAUSE, core=core)
-        # The option was verified above; force also covers native selects
-        # hidden behind a custom dropdown. On the element handle it never
-        # waits, so neither a Stop nor taking control can lead to a late
-        # selection.
-        await act_on_element(
-            tab,
-            locator,
-            element_id,
-            lambda handle: handle.select_option(
-                index=index, force=True, timeout=ACT_TIMEOUT_MS
-            ),
-        )
+        await _select_now(tab, locator, element_id, value)
         note = await after_action(page, watch, core=core)
     label = match.get("label") or value
     return await _done(

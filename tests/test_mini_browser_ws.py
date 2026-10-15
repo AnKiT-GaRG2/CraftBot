@@ -129,8 +129,11 @@ class FakeCore:
     async def ui_control(self, tab_id, take):
         await self._record("ui_control", tab_id, take)
 
-    async def ui_copy_selection(self, tab_id):
-        await self._record("ui_copy_selection", tab_id)
+    async def ui_copy_selection(self, tab_id, cut_request=None):
+        if cut_request is None:
+            await self._record("ui_copy_selection", tab_id)
+        else:
+            await self._record("ui_copy_selection", tab_id, cut_request)
         return self.selection
 
     async def set_viewport(self, width, height):
@@ -965,6 +968,40 @@ def test_copy_reply_names_its_request(env):
         )
 
     run(go)
+
+
+def test_a_cut_copy_is_remembered_and_its_delete_is_queued_input(env):
+    """Cut = copy (remembered under its requestId) + a "cut" input event,
+    queued behind the user's other input (PR re-review)."""
+
+    async def go():
+        env.core.tabs["t1"] = SimpleNamespace(filled_secrets=[])
+        env.core.selection = "CUT-ME"
+        ws, channel = connect(env)
+        await env.mb.handle(
+            ws, "mini_browser_copy", {"tabId": "t1", "requestId": "copy-9", "cut": True}
+        )
+        await env.mb.handle(
+            ws, "mini_browser_copy", {"tabId": "t1", "requestId": "copy-10"}
+        )
+        calls = [c for c in env.core.calls if c[0] == "ui_copy_selection"]
+        assert calls == [
+            ("ui_copy_selection", "t1", "copy-9"),  # remembered for the delete
+            ("ui_copy_selection", "t1"),  # a plain copy is not
+        ]
+
+    run(go)
+
+
+def test_cut_input_events_are_validated():
+    assert mbws._input_event({"kind": "cut", "requestId": "copy-3"}) == {
+        "kind": "cut",
+        "requestId": "copy-3",
+    }
+    for bad in ({"kind": "cut"}, {"kind": "cut", "requestId": ["x"]}):
+        with pytest.raises(MiniBrowserError) as info:
+            mbws._input_event(bad)
+        assert info.value.code == "MINI_BROWSER_INVALID_INPUT"
 
 
 def test_ops_needing_a_browser_report_not_running(env):

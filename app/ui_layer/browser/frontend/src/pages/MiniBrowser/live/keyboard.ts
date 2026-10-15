@@ -85,13 +85,6 @@ const press = (key: string, e: KeyLike): KeyIntent => {
   return modifiers ? { kind: 'press', key, modifiers } : { kind: 'press', key }
 }
 
-/** The page's own cut shortcut (⌘X on macOS, Ctrl+X elsewhere), pressed
- *  after a cut's text was copied — whichever keys the user cut with
- *  (Ctrl+X, ⌘X or Shift+Delete). */
-export function cutShortcut(isMac: boolean = IS_MAC): MiniBrowserKeyModifiers {
-  return { shift: false, ctrl: !isMac, alt: false, meta: isMac }
-}
-
 /** Decide what a keydown in the live view should do. */
 export function classifyKey(e: KeyLike, isMac: boolean = IS_MAC): KeyIntent {
   // IME composition, dead keys and virtual keyboards produce their text via
