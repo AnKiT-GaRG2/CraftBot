@@ -879,16 +879,6 @@ class GmailClient(GoogleApiClientMixin, BasePlatformClient):
             transform=lambda d: {"id": d.get("id"), "trashed": False},
         )
 
-    def delete_message(self, message_id: str) -> Result:
-        """Permanently delete. Use trash_message for soft delete."""
-        return http_request(
-            "DELETE",
-            f"{GMAIL_API_BASE}/users/me/messages/{message_id}",
-            headers=self._auth_header(),
-            expected=(204,),
-            transform=lambda _d: {"deleted": True, "message_id": message_id},
-        )
-
     def batch_modify_messages(
         self,
         message_ids: List[str],
@@ -907,16 +897,6 @@ class GmailClient(GoogleApiClientMixin, BasePlatformClient):
             json=payload,
             expected=(204,),
             transform=lambda _d: {"modified": len(message_ids)},
-        )
-
-    def batch_delete_messages(self, message_ids: List[str]) -> Result:
-        return http_request(
-            "POST",
-            f"{GMAIL_API_BASE}/users/me/messages/batchDelete",
-            headers=self._headers(),
-            json={"ids": message_ids},
-            expected=(204,),
-            transform=lambda _d: {"deleted": len(message_ids)},
         )
 
     # ----- Reply / forward (build proper RFC 2822 message and send via threadId) -----
@@ -1259,15 +1239,6 @@ class GmailClient(GoogleApiClientMixin, BasePlatformClient):
             headers=self._auth_header(),
             expected=(200,),
             transform=lambda d: {"id": d.get("id"), "trashed": False},
-        )
-
-    def delete_thread(self, thread_id: str) -> Result:
-        return http_request(
-            "DELETE",
-            f"{GMAIL_API_BASE}/users/me/threads/{thread_id}",
-            headers=self._auth_header(),
-            expected=(204,),
-            transform=lambda _d: {"deleted": True, "thread_id": thread_id},
         )
 
     # ----- Drafts -----

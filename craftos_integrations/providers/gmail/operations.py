@@ -33,8 +33,8 @@ _INLINE_IMAGES_INPUT = {
     "type": "array",
     "description": (
         "Optional local image file paths shown INSIDE the email body (not as "
-        "attachments). Place each in an HTML body with <img src=\"cid:<file "
-        "name>\">, e.g. <img src=\"cid:chart.png\">; an <img src> holding a "
+        'attachments). Place each in an HTML body with <img src="cid:<file '
+        'name>">, e.g. <img src="cid:chart.png">; an <img src> holding a '
         "local path is embedded too. Images not placed in the body are shown "
         "below it, so a plain-text body works as well."
     ),
@@ -454,24 +454,6 @@ def build_operations() -> List[Operation]:
             },
         ),
         client_op(
-            "delete_gmail",
-            "delete_message",
-            description="Permanently delete a Gmail message (NOT reversible — prefer trash_gmail).",
-            destructive=True,
-            parallelizable=False,
-            tags=("gmail_mail",),
-            unwrap_envelope=True,
-            success_message="Message permanently deleted.",
-            fail_message="Failed to delete message.",
-            input_schema={
-                "message_id": {
-                    "type": "string",
-                    "description": "Gmail message id.",
-                    "example": "18c2f...",
-                },
-            },
-        ),
-        client_op(
             "batch_modify_gmail",
             "batch_modify_messages",
             description="Bulk add/remove labels across multiple messages in one call.",
@@ -493,23 +475,6 @@ def build_operations() -> List[Operation]:
                 "remove_label_ids": {
                     "type": "array",
                     "description": "Label IDs to remove.",
-                    "example": [],
-                },
-            },
-        ),
-        client_op(
-            "batch_delete_gmail",
-            "batch_delete_messages",
-            description="Permanently delete multiple messages. Irreversible.",
-            destructive=True,  # permanent delete
-            parallelizable=False,
-            tags=("gmail_mail",),
-            unwrap_envelope=True,
-            fail_message="Failed to batch delete.",
-            input_schema={
-                "message_ids": {
-                    "type": "array",
-                    "description": "List of message IDs.",
                     "example": [],
                 },
             },
@@ -596,23 +561,6 @@ def build_operations() -> List[Operation]:
             tags=("gmail_threads",),
             unwrap_envelope=True,
             fail_message="Failed to untrash thread.",
-            input_schema={
-                "thread_id": {
-                    "type": "string",
-                    "description": "Thread ID.",
-                    "example": "",
-                },
-            },
-        ),
-        client_op(
-            "delete_gmail_thread",
-            "delete_thread",
-            description="Permanently delete a Gmail thread (all messages). Irreversible.",
-            destructive=True,  # permanent delete
-            parallelizable=False,
-            tags=("gmail_threads",),
-            unwrap_envelope=True,
-            fail_message="Failed to delete thread.",
             input_schema={
                 "thread_id": {
                     "type": "string",

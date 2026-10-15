@@ -51,6 +51,8 @@ def test_oauth_spec_carries_the_chooser_fix():
     assert spec.extra_authorize_params["prompt"] == "consent select_account"
     assert spec.extra_authorize_params["access_type"] == "offline"
     assert spec.has_chooser
+    assert "https://www.googleapis.com/auth/gmail.modify" in spec.scopes
+    assert "https://mail.google.com/" not in spec.scopes
 
 
 def test_binding_replaces_disk_plumbing():
@@ -134,6 +136,63 @@ def test_operation_error_shape_is_agent_friendly(system, monkeypatch):
     )
     assert result["status"] == "error"
     assert "403" in result["message"]
+
+
+@pytest.mark.parametrize(
+    ("operation", "inputs"),
+    [
+        ("delete_gmail", {"message_id": "m1"}),
+        ("batch_delete_gmail", {"message_ids": ["m1", "m2"]}),
+        ("delete_gmail_thread", {"thread_id": "t1"}),
+    ],
+)
+def test_permanent_deletion_is_not_discoverable_or_executable(
+    system, monkeypatch, operation, inputs
+):
+    def unexpected_http(*args, **kwargs):
+        pytest.fail("Removed Gmail actions must not issue an HTTP request")
+
+    monkeypatch.setattr(gmail_client_mod, "http_request", unexpected_http)
+    assert operation not in {op.name for op in system.operations("gmail")}
+    with pytest.raises(LookupError, match="has no operation"):
+        run(system.execute("gmail", operation, inputs, account="school"))
+
+
+@pytest.mark.parametrize(
+    ("operation", "input_key", "resource_id", "endpoint"),
+    [
+        ("trash_gmail", "message_id", "m1", "messages/m1/trash"),
+        ("untrash_gmail", "message_id", "m1", "messages/m1/untrash"),
+        ("trash_gmail_thread", "thread_id", "t1", "threads/t1/trash"),
+        ("untrash_gmail_thread", "thread_id", "t1", "threads/t1/untrash"),
+        ("delete_gmail_draft", "draft_id", "d1", "drafts/d1"),
+        ("delete_gmail_label", "label_id", "l1", "labels/l1"),
+    ],
+)
+def test_supported_removal_and_restore_actions_use_selected_account(
+    system, monkeypatch, operation, input_key, resource_id, endpoint
+):
+    calls = []
+
+    def fake_http(method, url, **kwargs):
+        calls.append((method, url, kwargs["headers"]["Authorization"]))
+        payload = {"id": resource_id}
+        transform = kwargs.get("transform")
+        return {"ok": True, "result": transform(payload) if transform else payload}
+
+    monkeypatch.setattr(gmail_client_mod, "http_request", fake_http)
+    result = run(
+        system.execute("gmail", operation, {input_key: resource_id}, account="school")
+    )
+    assert result["status"] == "success"
+    expected_method = "DELETE" if operation.startswith("delete_") else "POST"
+    assert calls == [
+        (
+            expected_method,
+            f"https://gmail.googleapis.com/gmail/v1/users/me/{endpoint}",
+            "Bearer at-b",
+        )
+    ]
 
 
 # ----- Outgoing MIME: HTML + inline images -----
@@ -266,7 +325,9 @@ def test_duplicate_file_names_get_distinct_cids(system, sent, tmp_path):
             {"subject": "s", "body": "x", "inline_images": [first, second]},
         )
     )
-    cids = [p["Content-ID"] for p in sent[0].walk() if p.get_content_maintype() == "image"]
+    cids = [
+        p["Content-ID"] for p in sent[0].walk() if p.get_content_maintype() == "image"
+    ]
     assert cids == ["<chart.png>", "<chart-2.png>"]
 
 
