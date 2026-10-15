@@ -19,6 +19,7 @@ Order matters and is expressed once, here:
   node        → the one Node runtime
   frontend    → browser UI's npm tree (default UI, so required)
   whatsapp    → bridge's npm tree
+  ripgrep     → the bundled search binary grep_files runs, checked not fetched
   playwright  → chromium for browser-automation actions
 
 Node comes after Python deps because nothing before it needs Node, and a slow
@@ -39,7 +40,7 @@ from app.provision.deps import (
     WhatsAppBridgeStage,
 )
 from app.provision.pipeline import format_report, run
-from app.provision.runtimes import NodeStage, PythonStage
+from app.provision.runtimes import NodeStage, PythonStage, RipgrepStage
 from app.provision.types import (
     Context,
     LogFn,
@@ -79,6 +80,7 @@ def default_stages() -> List[Stage]:
         NodeStage(),
         FrontendStage(),
         WhatsAppBridgeStage(),
+        RipgrepStage(),
         PlaywrightStage(),
     ]
 
