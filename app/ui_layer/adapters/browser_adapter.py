@@ -1993,12 +1993,19 @@ A quick Q&A will now begin to understand your objectives to serve you better:"""
         # Generic per-integration config (replaces the old bespoke jira/github settings handlers)
         elif msg_type == "integration_get_config":
             integration_id = data.get("id")
-            await self._handle_integration_get_config(integration_id)
+            await self._handle_integration_get_config(
+                integration_id, data.get("requestId")
+            )
 
         elif msg_type == "integration_update_config":
             integration_id = data.get("id")
             values = data.get("values") or {}
-            await self._handle_integration_update_config(integration_id, values)
+            await self._handle_integration_update_config(
+                integration_id,
+                values,
+                data.get("expected_values"),
+                data.get("requestId"),
+            )
 
         elif msg_type == "figma_canvas_control":
             await self._handle_figma_canvas_control(data)
@@ -7973,7 +7980,9 @@ A quick Q&A will now begin to understand your objectives to serve you better:"""
         result = await control_canvas(self._system_for("figma"), data)
         await self._broadcast({"type": "figma_canvas_result", "data": result})
 
-    async def _handle_integration_get_config(self, integration_id: str) -> None:
+    async def _handle_integration_get_config(
+        self, integration_id: str, request_id: Optional[str] = None
+    ) -> None:
         """Send the integration's config schema + current values to the frontend."""
         try:
             from craftos_integrations import get_config, get_config_schema, get_metadata
@@ -7985,6 +7994,7 @@ A quick Q&A will now begin to understand your objectives to serve you better:"""
                         "type": "integration_config",
                         "data": {
                             "id": integration_id,
+                            "requestId": request_id,
                             "success": False,
                             "error": tui("integration_unknown_generic"),
                         },
@@ -7996,6 +8006,7 @@ A quick Q&A will now begin to understand your objectives to serve you better:"""
                     "type": "integration_config",
                     "data": {
                         "id": integration_id,
+                        "requestId": request_id,
                         "success": True,
                         "schema": get_config_schema(integration_id) or [],
                         "values": get_config(integration_id) or {},
@@ -8008,6 +8019,7 @@ A quick Q&A will now begin to understand your objectives to serve you better:"""
                     "type": "integration_config",
                     "data": {
                         "id": integration_id,
+                        "requestId": request_id,
                         "success": False,
                         "error": str(e),
                     },
@@ -8015,18 +8027,25 @@ A quick Q&A will now begin to understand your objectives to serve you better:"""
             )
 
     async def _handle_integration_update_config(
-        self, integration_id: str, values: dict
+        self,
+        integration_id: str,
+        values: dict,
+        expected_values: Optional[dict] = None,
+        request_id: Optional[str] = None,
     ) -> None:
         """Persist new config values; return the post-write state so the UI can refresh."""
         try:
             from craftos_integrations import get_config, update_config
 
-            ok, message = update_config(integration_id, values or {})
+            ok, message = update_config(
+                integration_id, values or {}, expected_values=expected_values
+            )
             await self._broadcast(
                 {
                     "type": "integration_config_updated",
                     "data": {
                         "id": integration_id,
+                        "requestId": request_id,
                         "success": ok,
                         "message": message,
                         "values": get_config(integration_id) if ok else None,
@@ -8039,6 +8058,7 @@ A quick Q&A will now begin to understand your objectives to serve you better:"""
                     "type": "integration_config_updated",
                     "data": {
                         "id": integration_id,
+                        "requestId": request_id,
                         "success": False,
                         "error": str(e),
                     },

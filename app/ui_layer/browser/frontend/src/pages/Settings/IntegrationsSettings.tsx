@@ -492,6 +492,8 @@ export function IntegrationsSettings({ hideHeader = false }: { hideHeader?: bool
   const [configBaseline, setConfigBaseline] = useState<Record<string, any>>({})
   const [configLoading, setConfigLoading] = useState(false)
   const [configSaving, setConfigSaving] = useState(false)
+  const configLoadRequestRef = React.useRef<string | null>(null)
+  const configSaveRequestRef = React.useRef<string | null>(null)
 
   // Manage modal has two pages: the main page (accounts LIST + integration
   // settings) and one account's DETAIL. Reset to 'list' on every open/close.
@@ -617,7 +619,9 @@ export function IntegrationsSettings({ hideHeader = false }: { hideHeader?: bool
               setConfigLoading(true)
               setConfigValues({})
               setConfigBaseline({})
-              send('integration_get_config', { id: d.integration.id })
+              const requestId = crypto.randomUUID()
+              configLoadRequestRef.current = requestId
+              send('integration_get_config', { id: d.integration.id, requestId })
             }
           } else if (managingIntegrationRef.current?.id === d.integration.id) {
             // Unsolicited info for the integration already on screen —
@@ -693,11 +697,14 @@ export function IntegrationsSettings({ hideHeader = false }: { hideHeader?: bool
       onMessage('integration_config', (data: unknown) => {
         const d = data as {
           id: string; success: boolean
+          requestId?: string
           schema?: ConfigField[]; values?: Record<string, any>
           error?: string
         }
         // Another integration's config must not replace the open form.
         if (d.id !== managingIntegrationRef.current?.id) return
+        if (!d.requestId || d.requestId !== configLoadRequestRef.current) return
+        configLoadRequestRef.current = null
         setConfigLoading(false)
         if (d.success) {
           const loaded = d.values || {}
@@ -710,9 +717,12 @@ export function IntegrationsSettings({ hideHeader = false }: { hideHeader?: bool
       onMessage('integration_config_updated', (data: unknown) => {
         const d = data as {
           id: string; success: boolean
+          requestId?: string
           message?: string; values?: Record<string, any>; error?: string
         }
         if (d.id !== managingIntegrationRef.current?.id) return
+        if (!d.requestId || d.requestId !== configSaveRequestRef.current) return
+        configSaveRequestRef.current = null
         setConfigSaving(false)
         if (d.success) {
           showToast('success', d.message || t('settings:integrations.toast.settingsSaved'))
@@ -1545,7 +1555,21 @@ export function IntegrationsSettings({ hideHeader = false }: { hideHeader?: bool
           if (accountsDirty) handleSaveAccountChanges()
           if (settingsDirty) {
             setConfigSaving(true)
-            send('integration_update_config', { id: integration.id, values: configValues })
+            // Preserve fields changed by chat actions or another tab while
+            // this form was open; reject concurrent edits to the same field.
+            const values = Object.fromEntries(
+              Object.entries(configValues).filter(
+                ([key, value]) => JSON.stringify(value) !== JSON.stringify(configBaseline[key])
+              )
+            )
+            const expectedValues = Object.fromEntries(
+              Object.keys(values).map(key => [key, configBaseline[key]])
+            )
+            const requestId = crypto.randomUUID()
+            configSaveRequestRef.current = requestId
+            send('integration_update_config', {
+              id: integration.id, values, expected_values: expectedValues, requestId,
+            })
           }
         }
         const discardAll = () => {
