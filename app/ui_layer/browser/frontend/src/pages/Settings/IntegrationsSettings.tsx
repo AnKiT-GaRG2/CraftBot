@@ -460,6 +460,7 @@ export function IntegrationsSettings({ hideHeader = false }: { hideHeader?: bool
   // overlay click, disconnect flows) goes through here so staged edits are
   // always discarded.
   const closeManageModal = useCallback(() => {
+    managingIntegrationRef.current = null
     setShowManageModal(false)
     setManagingIntegration(null)
     setManagedAccounts(null)
@@ -600,6 +601,9 @@ export function IntegrationsSettings({ hideHeader = false }: { hideHeader?: bool
             // Response to OUR explicit request (Manage click / post-connect
             // follow-up) — the only path that may OPEN the modal.
             manageRequestedRef.current = false
+            // Publish the active integration before requesting config: a fast
+            // response can arrive before the effect mirrors React state.
+            managingIntegrationRef.current = d.integration
             setManagingIntegration(d.integration)
             setShowManageModal(true)
             // Always open on the accounts list (never a stale detail page).
