@@ -1119,7 +1119,10 @@ def test_the_same_text_is_not_typed_into_a_page_a_fourth_time(browser):
 
     messages, refused, value, other = run(browser, html, scenario)
     assert "this same text here" not in messages[0]
-    assert f"typed this same text here {ops.TYPE_REPEAT_LIMIT} times" in messages[-1]
+    assert (
+        f"typed this same text into this field {ops.TYPE_REPEAT_LIMIT} times"
+        in messages[-1]
+    )
     assert "already typed this same text" in refused.fields["detail"]
     assert value == ""  # the fourth time typed nothing
     assert other["status"] == "success"  # other text is fine
@@ -1127,15 +1130,21 @@ def test_the_same_text_is_not_typed_into_a_page_a_fourth_time(browser):
 
 def test_a_retry_that_only_changes_how_an_address_is_written_is_the_same_text():
     tab = SimpleNamespace(page=SimpleNamespace(url="https://www.threads.net/"))
-    key = ops._typing_key(tab, "Big news https://example.com/news check it out")
-    assert key == ops._typing_key(tab, "Big  news example.com/news check it out")
-    assert key == ops._typing_key(tab, "big news www.example.com/news CHECK it out")
-    assert key != ops._typing_key(tab, "Big news https://other.org/news check it out")
-    elsewhere = SimpleNamespace(page=SimpleNamespace(url="https://x.com/compose"))
-    assert key != ops._typing_key(
-        elsewhere, "Big news https://example.com/news check it out"
+    text = "Big news https://example.com/news check it out"
+    key = ops._typing_key(tab, "f1", text)
+    assert key == ops._typing_key(tab, "f1", "Big  news example.com/news check it out")
+    assert key == ops._typing_key(
+        tab, "f1", "big news www.example.com/news CHECK it out"
     )
-    assert ops._typing_key(tab, "short text") is None
+    # Any other difference in an address is a different text (PR re-review).
+    assert key != ops._typing_key(tab, "f1", text.replace("/news", "/sport"))
+    assert key != ops._typing_key(tab, "f1", text.replace("example.com", "other.org"))
+    # Another field or another page is never the same.
+    assert key != ops._typing_key(tab, "f2", text)
+    elsewhere = SimpleNamespace(page=SimpleNamespace(url="https://x.com/compose"))
+    assert key != ops._typing_key(elsewhere, "f1", text)
+    assert ops._typing_key(tab, "f1", "short text") is None
+    assert ops._typing_key(tab, None, text) is None
 
 
 def test_the_read_back_covers_the_whole_editor(browser):
@@ -1223,3 +1232,85 @@ def test_a_dropdown_option_that_comes_back_is_still_selected(browser, monkeypatc
 
     result, state = run(browser, SIZE_SELECT, scenario)
     assert result["status"] == "success" and state == ["b", 1]
+
+
+# ── PR re-review 2: the retype guard only stops a retype loop ───────────────
+
+
+def test_the_same_value_fills_any_number_of_different_fields(browser):
+    """Four distinct textareas with the same company name: none refused."""
+    html = "".join(f"<textarea aria-label='Field {n}'></textarea>" for n in range(1, 6))
+    text = "CraftBot Engineering Department"
+
+    async def scenario(core, tab):
+        for n in range(1, 6):
+            obs = await observe(core, tab, compact=True)
+            await ops.type_text(
+                core, tab, element_id=element(obs, f'"Field {n}"'), text=text
+            )
+        return await tab.page.evaluate(
+            "Array.from(document.querySelectorAll('textarea')).map(t => t.value)"
+        )
+
+    assert run(browser, html, scenario) == [text] * 5
+
+
+def test_different_addresses_on_one_site_are_different_texts(browser):
+    html = "<textarea aria-label='Note'></textarea>"
+
+    async def scenario(core, tab):
+        results = []
+        for n in range(1, 6):
+            obs = await observe(core, tab, compact=True)
+            result = await ops.type_text(
+                core,
+                tab,
+                element_id=element(obs, '"Note"'),
+                text=f"See the report at https://reports.example.com/r/{n}",
+            )
+            results.append(result["status"])
+        return results
+
+    assert run(browser, html, scenario) == ["success"] * 5
+
+
+def test_a_sent_text_can_be_typed_again(browser):
+    """Enter sends it (a chat message, a search): the next one is new."""
+    html = (
+        "<input aria-label='Message' onkeydown=\"if (event.key === 'Enter')"
+        " { window.sent = (window.sent || 0) + 1; this.value = ''; }\">"
+    )
+    text = "Thanks, see you tomorrow at nine!"
+
+    async def scenario(core, tab):
+        for _ in range(ops.TYPE_REPEAT_LIMIT + 2):
+            obs = await observe(core, tab, compact=True)
+            await ops.type_text(
+                core, tab, element_id=element(obs, '"Message"'), text=text, submit=True
+            )
+        return await tab.page.evaluate("window.sent")
+
+    assert run(browser, html, scenario) == ops.TYPE_REPEAT_LIMIT + 2
+
+
+# ── PR re-review 2: navigation after take-control ───────────────────────────
+
+
+@pytest.mark.parametrize("target", ["reload", "url"])
+def test_navigation_is_refused_once_the_user_took_control(browser, server, target):
+    url = server.add("/draft-page", "<title>Draft</title><textarea id=t></textarea>")
+    other = server.add("/elsewhere", "<title>Elsewhere</title>")
+
+    async def scenario(core, tab):
+        await tab.page.evaluate("document.getElementById('t').value = 'unsaved'")
+        tab.user_control = True  # taken while the operation waited its turn
+        await expect_error(
+            ops.navigate(core, tab, url="reload" if target == "reload" else other),
+            "MINI_BROWSER_USER_IN_CONTROL",
+        )
+        return tab.page.url, await tab.page.evaluate(
+            "document.getElementById('t').value"
+        )
+
+    page_url, value = run(browser, url, scenario)
+    assert page_url.endswith("/draft-page") and value == "unsaved"

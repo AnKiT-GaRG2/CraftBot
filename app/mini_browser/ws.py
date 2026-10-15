@@ -297,7 +297,17 @@ async def _copy_selection(
         return ""
     tab = (getattr(core, "tabs", None) or {}).get(tab_id)
     secrets = list(getattr(tab, "filled_secrets", None) or ())
-    return _clean_text(text[:_MAX_CLIPBOARD_CHARS], secrets)
+    cleaned = _clean_text(text[:_MAX_CLIPBOARD_CHARS], secrets)
+    if cut_request and cleaned != text:
+        # The clipboard does not get the selection as it is: never delete it.
+        core.ui_drop_cut(tab_id, cut_request)
+    return cleaned
+
+
+def _cut_key(ws: Any, request_id: str) -> str:
+    """A cut's request id, scoped to the viewer connection that sent it: every
+    viewer counts its own ids, so two viewers' cuts never share a record."""
+    return f"{id(ws):x}:{request_id}"
 
 
 async def _clear_launch_error(core: Any) -> None:
@@ -1309,6 +1319,8 @@ class MiniBrowserWS:
         tab_id = _short_id(data.get("tabId"), "tabId", required=True)
         if _host_if_started() is None:
             return  # no browser to type into
+        if event["kind"] == "cut":
+            event = {**event, "requestId": _cut_key(ws, event["requestId"])}
         self._queue_input(ws, tab_id, event)
 
     def _queue_input(self, ws: Any, tab_id: str, event: Dict[str, Any]) -> None:
@@ -1433,7 +1445,11 @@ class MiniBrowserWS:
         request_id = _short_id(data.get("requestId"), "requestId", required=False)
         # The first half of a cut: the delete follows as a "cut" input event
         # with the same requestId, once the text is on the user's clipboard.
-        cut_request = request_id if data.get("cut") is True else None
+        cut_request = (
+            _cut_key(ws, request_id)
+            if request_id is not None and data.get("cut") is True
+            else None
+        )
         host = self._running_host()
         # The selection may come from input still on its way (a drag, Ctrl+A).
         await self._settle_input(ws, tab_id, drop_late=False)

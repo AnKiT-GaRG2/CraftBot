@@ -124,9 +124,10 @@ FORMATTING_NOTE = (
 )
 
 # mini_browser_type refuses to type the same text (TYPE_REPEAT_MIN_CHARS or
-# more) into the same page more than TYPE_REPEAT_LIMIT times within
-# TYPE_REPEAT_WINDOW_S: an agent that took a site's formatting for its own
-# mistake deleted and retyped a post in an endless loop.
+# more) into the same field more than TYPE_REPEAT_LIMIT times within
+# TYPE_REPEAT_WINDOW_S without it being sent in between: an agent that took
+# a site's formatting for its own mistake deleted and retyped a post in an
+# endless loop. Other fields, other pages and sent posts are not affected.
 TYPE_REPEAT_LIMIT = 3
 TYPE_REPEAT_WINDOW_S = 600.0
 TYPE_REPEAT_MIN_CHARS = 20
@@ -1420,10 +1421,13 @@ async def navigate(
     target = (url or "").strip()
     action = target.lower()
     with NavWatch(page) as watch:
+        if action not in HISTORY_TARGETS:
+            check_url_allowed(core, target)
+        # Leaving the page drops whatever the user typed into it.
+        human.ensure_control(tab)
         if action in HISTORY_TARGETS:
             note = await _history(page, action, timeout_ms)
         else:
-            check_url_allowed(core, target)
             note = await _goto(page, target, timeout_ms, watch)
         if tab_gone(core, tab):
             raise closed_error(core, tab)
@@ -1803,20 +1807,56 @@ async def _editor_text(locator: Any) -> Optional[str]:
     return text if isinstance(text, str) else None
 
 
-def _typing_key(tab: Any, text: str) -> Optional[str]:
-    """What identifies "this text typed into this page" (a hash: the text
-    itself is never kept), or None for short texts. Addresses count by their
-    host, so a retry that only adds or drops "https://" is the same text."""
-    plain = _plain("".join(_address_pieces(text)))
+# Called on a field: a token naming that very field, kept on it in
+# data-mb-field (a rich text box is named by its outermost editable element).
+FIELD_TOKEN_JS = r"""
+(el) => {
+  let ctl = (el.tagName === 'LABEL' && el.control) ? el.control : el;
+  while (ctl.parentElement && ctl.parentElement.isContentEditable) ctl = ctl.parentElement;
+  let token = ctl.getAttribute('data-mb-field');
+  if (!token) {
+    token = Math.random().toString(36).slice(2, 12);
+    ctl.setAttribute('data-mb-field', token);
+  }
+  return token;
+}
+"""
+
+_ADDRESS_TAIL_RE = re.compile(r"[/.,;:!?)]+$")
+
+
+async def _field_token(locator: Any) -> Optional[str]:
+    try:
+        token = await locator.evaluate(FIELD_TOKEN_JS, timeout=2000)
+    except Exception:
+        return None
+    return token if isinstance(token, str) and token else None
+
+
+def _typing_key(tab: Any, field: Optional[str], text: str) -> Optional[str]:
+    """What identifies "this text typed into this field of this page" (a
+    hash: the text itself is never kept), or None for short texts or an
+    unknown field. A retry that only adds or drops "https://" or "www." is
+    the same text; any other difference in an address is not."""
+    if not field:
+        return None
+    pieces: List[str] = []
+    last = 0
+    for start, end in human.address_spans(text):
+        address = _ADDRESS_PREFIX_RE.sub("", text[start:end])
+        pieces.extend((text[last:start], _ADDRESS_TAIL_RE.sub("", address)))
+        last = end
+    pieces.append(text[last:])
+    plain = _plain("".join(pieces))
     if len(plain) < TYPE_REPEAT_MIN_CHARS:
         return None
     parts = urlsplit(_page_url(tab))
     where = f"{parts.scheme}://{parts.netloc}{parts.path}"
-    data = f"{where}\n{plain}".encode("utf-8", "surrogatepass")
+    data = "\n".join((where, field, plain)).encode("utf-8", "surrogatepass")
     return hashlib.sha256(data).hexdigest()
 
 
-def _typing_history(tab: Any) -> Dict[str, Tuple[int, float]]:
+def _typing_history(tab: Any) -> Dict[str, Tuple[int, float, str]]:
     history = getattr(tab, "typed_history", None)
     if not isinstance(history, dict):
         history = {}
@@ -1828,21 +1868,32 @@ def _typing_history(tab: Any) -> Dict[str, Tuple[int, float]]:
 
 
 def _times_typed(tab: Any, key: str) -> int:
-    """How often this text was typed into this page in the last
-    TYPE_REPEAT_WINDOW_S."""
+    """How often this text was typed into this field (without being sent)
+    in the last TYPE_REPEAT_WINDOW_S."""
     history = _typing_history(tab)
     now = time.monotonic()
-    for old, (_count, first) in list(history.items()):
+    for old, (_count, first, _field) in list(history.items()):
         if now - first > TYPE_REPEAT_WINDOW_S:
             del history[old]
     entry = history.get(key)
     return entry[0] if entry else 0
 
 
-def _note_typed(tab: Any, key: str) -> None:
+def _note_typed(tab: Any, key: str, field: str) -> None:
     history = _typing_history(tab)
-    count, first = history.get(key, (0, time.monotonic()))
-    history[key] = (count + 1, first)
+    count, first, _field = history.get(key, (0, time.monotonic(), field))
+    history[key] = (count + 1, first, field)
+
+
+def _forget_field(tab: Any, field: Optional[str]) -> None:
+    """The field's text was sent (Enter) or the page moved on: typing the
+    same text there again is a new post, not a retry."""
+    if not field:
+        return
+    history = _typing_history(tab)
+    for key, entry in list(history.items()):
+        if entry[2] == field:
+            del history[key]
 
 
 async def _typed_state(locator: Any) -> str:
@@ -1888,25 +1939,10 @@ async def type_text(
     still empty after typing is reported as a failure. A rich text field
     (a post or message box) is read back after typing and the result says
     whether it holds the whole text. The same text is typed into the same
-    page at most TYPE_REPEAT_LIMIT times within TYPE_REPEAT_WINDOW_S.
+    field at most TYPE_REPEAT_LIMIT times within TYPE_REPEAT_WINDOW_S unless
+    it is sent in between (Enter, or the page moving on).
     """
     page = tab.page
-    repeat_key = _typing_key(tab, text)
-    typed_before = _times_typed(tab, repeat_key) if repeat_key else 0
-    if typed_before >= TYPE_REPEAT_LIMIT:
-        minutes = int(TYPE_REPEAT_WINDOW_S // 60)
-        raise MiniBrowserError(
-            "MINI_BROWSER_INVALID_INPUT",
-            detail=(
-                f"You already typed this same text into this page {typed_before} "
-                f"times in the last {minutes} minutes, so it was not typed again. "
-                "Sites reformat what you type (web addresses become links, a link "
-                "preview appears, @mentions and #tags are styled), so the field "
-                "does not look exactly like your text; that is not a mistake. "
-                "Check the field with mini_browser_read, then continue (for "
-                "example press the Post button) or ask the user."
-            ),
-        )
     locator = await locate(tab, element_id)
     info = await _field_info(locator, element_id)
     problem = _not_typeable(info)
@@ -1915,6 +1951,23 @@ async def type_text(
             "MINI_BROWSER_ELEMENT_NOT_INTERACTABLE",
             element_id=element_id,
             detail=problem,
+        )
+    field = await _field_token(locator)
+    repeat_key = _typing_key(tab, field, text)
+    typed_before = _times_typed(tab, repeat_key) if repeat_key else 0
+    if typed_before >= TYPE_REPEAT_LIMIT:
+        minutes = int(TYPE_REPEAT_WINDOW_S // 60)
+        raise MiniBrowserError(
+            "MINI_BROWSER_INVALID_INPUT",
+            detail=(
+                f"You already typed this same text into this field {typed_before} "
+                f"times in the last {minutes} minutes without sending it, so it "
+                "was not typed again. Sites reformat what you type (web addresses "
+                "become links, a link preview appears, @mentions and #tags are "
+                "styled), so the field does not look exactly like your text; that "
+                "is not a mistake. Check the field with mini_browser_read, then "
+                "continue (for example press the Post button) or ask the user."
+            ),
         )
     if info.get("tag") == "INPUT" and info.get("type") in VALUE_INPUT_TYPES:
         return await _set_whole_value(
@@ -2012,8 +2065,10 @@ async def type_text(
                         "the page before trying again"
                     ),
                 )
-    if repeat_key:
-        _note_typed(tab, repeat_key)
+    if submit or watch.navigated:
+        _forget_field(tab, field)  # sent: the next time is a new post
+    elif repeat_key and field:
+        _note_typed(tab, repeat_key, field)
     message = f"Typed {len(text)} characters into element {element_id}"
     if not text and clear:
         message = f"Cleared element {element_id}"
@@ -2029,9 +2084,9 @@ async def type_text(
                 " Compare it with your text before doing anything else; links, "
                 "a link preview and styled @mentions or #tags are normal."
             )
-    if typed_before == TYPE_REPEAT_LIMIT - 1:
+    if typed_before == TYPE_REPEAT_LIMIT - 1 and not submit:
         message += (
-            f" You have now typed this same text here {TYPE_REPEAT_LIMIT} times: "
+            f" You have now typed this same text into this field {TYPE_REPEAT_LIMIT} times: "
             "if the page keeps changing it, that is the site's formatting. Do "
             "not type it again."
         )

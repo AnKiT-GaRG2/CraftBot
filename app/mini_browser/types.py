@@ -85,9 +85,10 @@ class Tab:
     # outgoing text. Never serialise this field anywhere.
     filled_secrets: List[str] = field(default_factory=list, repr=False)
 
-    # Texts an agent typed here recently: hash of (page, text) -> (times,
-    # first time). Stops a delete-and-retype loop (ops.TYPE_REPEAT_LIMIT).
-    typed_history: Dict[str, Tuple[int, float]] = field(
+    # Texts an agent typed here recently: hash of (page, field, text) ->
+    # (times, first time, field token). Stops a delete-and-retype loop
+    # (ops.TYPE_REPEAT_LIMIT).
+    typed_history: Dict[str, Tuple[int, float, str]] = field(
         default_factory=dict, repr=False
     )
 

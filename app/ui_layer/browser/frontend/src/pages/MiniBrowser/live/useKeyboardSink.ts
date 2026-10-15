@@ -87,6 +87,8 @@ export function useKeyboardSink({
   const lastEscapeRef = useRef(0)
   const copyRef = useRef<PendingCopy | null>(null)
   const copySeqRef = useRef(0)
+  // Unique per mount, so a remounted view never reuses an earlier id.
+  const copyPrefixRef = useRef(Math.random().toString(36).slice(2, 10))
 
   // ── Copy / cut ───────────────────────────────────────────────────────
   const copySelection = useCallback((cut: boolean) => {
@@ -95,7 +97,7 @@ export function useKeyboardSink({
     const tabId = tab.id
     input.flushText()
     copySeqRef.current += 1
-    const requestId = `copy-${copySeqRef.current}`
+    const requestId = `copy-${copyPrefixRef.current}-${copySeqRef.current}`
     if (!sendLive('mini_browser_copy', { tabId, requestId, cut })) return
     const previous = copyRef.current
     if (previous) {

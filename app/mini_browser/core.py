@@ -147,6 +147,7 @@ MAX_COPY_CHARS = 20_000
 MAX_TEXT_INPUT = 2000
 # A cut deletes the selection at most this long after its copy was taken.
 CUT_WINDOW_S = 30.0
+MAX_PENDING_CUTS = 8  # per tab
 WHEEL_LIMIT = 5000.0
 # Our own CDP session keeps (almost) no response bodies: Playwright's has them.
 NETWORK_ENABLE = {"maxTotalBufferSize": 1_000_000, "maxResourceBufferSize": 100_000}
@@ -321,9 +322,11 @@ class BrowserCore:
         # Tabs being opened (reservation token -> owner): they count against
         # the tab limits until they are registered (see _reserve_tab).
         self._opening: Dict[object, Optional[str]] = {}
-        # A cut in progress, per tab: (request id, the text it copied, when).
+        # Cuts in progress, per tab: request id -> (the text it copied,
+        # when). Request ids are unique per viewer connection (ws.py scopes
+        # them), so overlapping cuts from two viewers never share a record.
         # The delete runs only while the selection is still that text.
-        self._cuts: Dict[str, Tuple[str, str, float]] = {}
+        self._cuts: Dict[str, Dict[str, Tuple[str, float]]] = {}
         self._adoptions: Set[asyncio.Task] = set()
         self._front_tab: Dict[int, str] = {}  # window id -> its active tab id
         self._tab_ids = itertools.count(1)
@@ -1202,10 +1205,11 @@ class BrowserCore:
         ``cut_request``: this copy is the first half of a cut; its text is
         remembered (in memory only, at most CUT_WINDOW_S) so the delete that
         follows (``ui_input`` kind "cut") can make sure it deletes exactly
-        what was copied.
+        what was copied. Only a complete copy is remembered: a selection
+        longer than MAX_COPY_CHARS, or one with a saved password masked out,
+        does not reach the clipboard whole, so it is copied but never cut.
         """
         tab = self._ui_tab(tab_id)
-        self._cuts.pop(tab.id, None)
         try:
             text = await asyncio.wait_for(
                 tab.page.evaluate(_SELECTION_JS), EVALUATE_TIMEOUT_S
@@ -1217,9 +1221,23 @@ class BrowserCore:
             return ""
         if not isinstance(text, str):
             return ""
-        if cut_request and text:
-            self._cuts[tab.id] = (cut_request, text[:MAX_COPY_CHARS], time.monotonic())
-        return scrub(text[:MAX_COPY_CHARS], self._secrets())
+        shown = scrub(text[:MAX_COPY_CHARS], self._secrets())
+        if cut_request and text and shown == text:
+            pending = self._cuts.setdefault(tab.id, {})
+            now = time.monotonic()
+            for request, (_copied, at) in list(pending.items()):
+                if now - at > CUT_WINDOW_S:
+                    del pending[request]
+            pending[cut_request] = (text, now)
+            while len(pending) > MAX_PENDING_CUTS:
+                del pending[next(iter(pending))]
+        return shown
+
+    def ui_drop_cut(self, tab_id: str, cut_request: str) -> None:
+        """Forget a pending cut (its copy did not reach the clipboard whole)."""
+        pending = self._cuts.get(tab_id)
+        if pending is not None:
+            pending.pop(cut_request, None)
 
     async def _cut(self, tab: Tab, request_id: Any, limit: float) -> None:
         """Delete the selection a cut copied, if it is still selected.
@@ -1229,16 +1247,16 @@ class BrowserCore:
         or the selection, the delete is skipped (it would remove text that is
         not on the clipboard).
         """
-        entry = self._cuts.pop(tab.id, None)
-        if (
-            entry is None
-            or entry[0] != request_id
-            or time.monotonic() - entry[2] > CUT_WINDOW_S
-        ):
+        # Only this request's own record: another viewer's pending cut on
+        # the same tab stays intact.
+        pending = self._cuts.get(tab.id) or {}
+        entry = pending.pop(request_id, None) if isinstance(request_id, str) else None
+        if entry is None or time.monotonic() - entry[1] > CUT_WINDOW_S:
             logger.debug("[MiniBrowser] Cut skipped: no matching copy")
             return
         current = await _within(tab.page.evaluate(_SELECTION_JS), limit)
-        if not isinstance(current, str) or current[:MAX_COPY_CHARS] != entry[1]:
+        # The whole selection must still be exactly what was copied.
+        if not isinstance(current, str) or current != entry[0]:
             logger.info(
                 "[MiniBrowser] Cut skipped: the selection changed after it was copied"
             )
@@ -1379,6 +1397,11 @@ class BrowserCore:
                             await self._recover_if_crashed(tab)
                             self._follow(tab)
                             await self._agent_front(tab)
+                            # Those waited: the user may have taken control
+                            # meanwhile, and the operation must not start.
+                            refused = self._control_refusal(tab, op, params)
+                            if refused is not None:
+                                return self._finish(refused, tab, owner=owner)
                             result = await self._run_op(
                                 tab, fn, params, self._op_timeout(op)
                             )
@@ -1640,6 +1663,11 @@ class BrowserCore:
             self._claim(tab, owner)
             self._follow(tab)
             async with tab.lock:
+                if target is not None and tab.user_control:
+                    # The user took the new tab over while it opened.
+                    refused = action_error("MINI_BROWSER_USER_IN_CONTROL")
+                    refused["tabs"] = self.tabs_payload(owner)
+                    return refused, tab
                 try:
                     if target is not None:
                         await self._goto(tab, target.url)

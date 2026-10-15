@@ -1794,3 +1794,144 @@ def test_a_cut_is_skipped_when_the_selection_moved_on(eng):
     skipped, again = eng.call(scenario)
     assert skipped == ["CUT-ME-483", "KEEP-ME"]
     assert again == ["CUT-ME-483", "KEEP-ME"]
+
+
+# ── PR re-review 2 ──────────────────────────────────────────────────────────
+
+
+def test_a_cut_longer_than_the_copy_limit_is_copied_but_never_deleted(eng):
+    long_text = "x" * (core_module.MAX_COPY_CHARS + 13)
+
+    async def scenario(core):
+        tab_id = await core.ui_new_tab(None)
+        page = core.tabs[tab_id].page
+        await page.set_content("<textarea id='t'></textarea><input id='u'>")
+        await page.evaluate(
+            "(v) => { document.getElementById('t').value = v; }", long_text
+        )
+        await _select_all_of(page, "t")
+        copied = await core.ui_copy_selection(tab_id, cut_request="copy-long")
+        await core.ui_input(tab_id, {"kind": "cut", "requestId": "copy-long"})
+        kept = await page.evaluate("document.getElementById('t').value.length")
+        return len(copied), kept
+
+    copied, kept = eng.call(scenario)
+    assert copied == core_module.MAX_COPY_CHARS  # the clipboard got only part
+    assert kept == len(long_text)  # so nothing was deleted
+
+
+def test_a_cut_with_a_masked_password_is_never_deleted(eng):
+    async def scenario(core):
+        tab_id = await core.ui_new_tab(None)
+        tab = core.tabs[tab_id]
+        tab.filled_secrets.append("S3cretPass99")
+        await tab.page.set_content(CUT_PAGE)
+        await tab.page.evaluate(
+            "document.getElementById('t').value = 'user S3cretPass99'"
+        )
+        await _select_all_of(tab.page, "t")
+        copied = await core.ui_copy_selection(tab_id, cut_request="copy-pw")
+        await core.ui_input(tab_id, {"kind": "cut", "requestId": "copy-pw"})
+        return copied, (await _fields(tab.page))[0]
+
+    copied, kept = eng.call(scenario)
+    assert "S3cretPass99" not in copied  # the clipboard got [redacted]
+    assert kept == "user S3cretPass99"  # so the real text stays
+
+
+def test_overlapping_cuts_keep_their_own_records(eng):
+    """Viewer A's delete never consumes viewer B's pending cut."""
+
+    async def scenario(core):
+        tab_id = await core.ui_new_tab(None)
+        page = core.tabs[tab_id].page
+        await page.set_content(
+            "<textarea id='t'>FIRST-COPY</textarea><input id='u' value='SECOND-COPY'>"
+        )
+        await _select_all_of(page, "t")
+        await core.ui_copy_selection(tab_id, cut_request="viewerA:copy-1")
+        await _select_all_of(page, "u")
+        await core.ui_copy_selection(tab_id, cut_request="viewerB:copy-1")
+        # A's delayed delete: the selection is B's text now, so nothing goes.
+        await core.ui_input(tab_id, {"kind": "cut", "requestId": "viewerA:copy-1"})
+        after_a = await _fields(page)
+        # B's own delete still works: its record was left intact.
+        await core.ui_input(tab_id, {"kind": "cut", "requestId": "viewerB:copy-1"})
+        return after_a, await _fields(page)
+
+    after_a, after_b = eng.call(scenario)
+    assert after_a == ["FIRST-COPY", "SECOND-COPY"]
+    assert after_b == ["FIRST-COPY", ""]
+
+
+def test_an_operation_rechecks_control_after_bringing_its_tab_forward(eng):
+    """The review's case: take control while the operation waits for its
+    window to come forward; the navigation must not happen."""
+    url = eng.site.url("/page?t=Draft")
+    tab_id = eng.op("nav-agent", "goto", url=url)["tab"]["id"]
+
+    async def scenario(core):
+        gate, reached = asyncio.Event(), asyncio.Event()
+        real_front = core._agent_front
+
+        async def paused_front(tab):
+            reached.set()
+            await gate.wait()
+            return await real_front(tab)
+
+        core._agent_front = paused_front
+        try:
+            going = asyncio.ensure_future(
+                core.agent_op(
+                    "nav-agent", "goto", {"url": eng.site.url("/page?t=Away")}
+                )
+            )
+            await asyncio.wait_for(reached.wait(), 10)
+            await core.ui_control(tab_id, True)
+            gate.set()
+            result = await asyncio.wait_for(going, 20)
+        finally:
+            del core._agent_front
+        page_url = core.tabs[tab_id].page.url
+        await core.ui_control(tab_id, False)
+        return result, page_url
+
+    result, page_url = eng.call(scenario)
+    assert result["error_code"] == "MINI_BROWSER_USER_IN_CONTROL", result
+    assert page_url.endswith("t=Draft")
+
+
+def test_a_new_tab_taken_over_while_opening_is_not_navigated(eng):
+    async def scenario(core):
+        before = set(core.tabs)
+        gate, reached = asyncio.Event(), asyncio.Event()
+        real_setup = core._setup_page
+
+        async def paused_setup(tab, *args, **kwargs):
+            reached.set()
+            await gate.wait()
+            return await real_setup(tab, *args, **kwargs)
+
+        core._setup_page = paused_setup
+        try:
+            opening = asyncio.ensure_future(
+                core.agent_op(
+                    "new-tab-agent",
+                    "tabs",
+                    {"action": "new", "url": eng.site.url("/page?t=Away")},
+                )
+            )
+            await asyncio.wait_for(reached.wait(), 10)
+            [new_id] = set(core.tabs) - before
+            await core.ui_control(new_id, True)
+            gate.set()
+            result = await asyncio.wait_for(opening, 20)
+        finally:
+            del core._setup_page
+        page_url = core.tabs[new_id].page.url
+        await core.ui_control(new_id, False)
+        return result, page_url
+
+    result, page_url = eng.call(scenario)
+    assert result["error_code"] == "MINI_BROWSER_USER_IN_CONTROL", result
+    assert "t=Away" not in page_url

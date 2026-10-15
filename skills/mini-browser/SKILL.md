@@ -43,8 +43,9 @@ formatting, not your mistake.
   its close (X) button once, after the text is final; editing the address
   afterwards can bring it back. If it comes back anyway, leave it and tell
   the user.
-- Never type the same text into a page more than twice. The action refuses
-  a fourth time; if it still looks wrong, stop and ask the user.
+- Never type the same text into the same box more than twice without
+  sending it. The action refuses a fourth time; if it still looks wrong,
+  stop and ask the user.
 
 ## Work autonomously
 

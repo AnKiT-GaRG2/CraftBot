@@ -985,10 +985,11 @@ def test_a_cut_copy_is_remembered_and_its_delete_is_queued_input(env):
             ws, "mini_browser_copy", {"tabId": "t1", "requestId": "copy-10"}
         )
         calls = [c for c in env.core.calls if c[0] == "ui_copy_selection"]
-        assert calls == [
-            ("ui_copy_selection", "t1", "copy-9"),  # remembered for the delete
-            ("ui_copy_selection", "t1"),  # a plain copy is not
-        ]
+        assert len(calls) == 2
+        # Remembered for the delete, under an id scoped to this connection.
+        assert calls[0][:2] == ("ui_copy_selection", "t1")
+        assert calls[0][2] == mbws._cut_key(ws, "copy-9")
+        assert calls[1] == ("ui_copy_selection", "t1")  # a plain copy is not
 
     run(go)
 
@@ -2191,3 +2192,10 @@ def test_set_setting_creates_a_missing_settings_file(settings_file):
     saved = json.loads(settings_file.read_text(encoding="utf-8"))
     assert saved["mini_browser"]["locale"] == "en-US"
     assert "model" in saved  # written from the shipped defaults
+
+
+def test_cut_ids_are_scoped_to_the_viewer_connection():
+    """Two viewers both start at copy-1: their cuts never share a record."""
+    first, second = object(), object()
+    assert mbws._cut_key(first, "copy-1") != mbws._cut_key(second, "copy-1")
+    assert mbws._cut_key(first, "copy-1") == mbws._cut_key(first, "copy-1")
