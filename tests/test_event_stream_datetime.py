@@ -68,6 +68,7 @@ def test_datetime_restamped_after_summarization(event_stream_limits):
     es = EventStream(llm=_FakeLLM())
     for i in range(400):
         es.log("action_end", f"action {i} produced some output text to add tokens")
+    es.mark_delivered()
     es.summarize_by_LLM()
     assert es.head_summary is not None
     # A current datetime marker is always present (re-stamped post-summary).

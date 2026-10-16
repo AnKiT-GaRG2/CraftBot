@@ -3554,6 +3554,8 @@ class AgentBase:
                     stream._total_tokens = sum(
                         get_cached_token_count(r) for r in records
                     )
+                    # The model read this history before the restart.
+                    stream.mark_delivered()
 
                     logger.info(
                         f"[RESTORE] Restored session '{session.title}' "

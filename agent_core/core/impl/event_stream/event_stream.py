@@ -68,9 +68,11 @@ MIN_KEEP_RECENT_EVENTS = 2
 # threshold is breached again on the very next event, so we prune instead.
 MIN_FOLD_TOKENS = 2000
 
-# Event kinds that summarization must NEVER collapse — they are kept verbatim in
-# tail_events forever, so the contract they carry survives any number of
-# summarization passes. `requirements` (from set_requirement) defines the task's
+# Event kinds whose NEWEST event summarization must never collapse. Each event of
+# these kinds is a complete snapshot that supersedes every earlier one, so the
+# newest is kept verbatim at the front of the surviving tail across any number
+# of folds, and the older ones fold like any other event. `requirements` (from
+# set_requirement, which always re-issues the COMPLETE list) defines the task's
 # scope/definition-of-done and lives ONLY in the event stream, so losing it to a
 # summary would drop the agent's success criteria. Add other kinds here to pin them.
 PROTECTED_SUMMARY_KINDS = frozenset({"requirements"})
@@ -438,23 +440,32 @@ class EventStream:
         )
         return cutoff
 
-    def _shrink_pinned_oversize(self, cutoff: int) -> int:
-        """Externalize oversized events in the surviving tail, in place.
+    def _fold_cutoff(self) -> int:
+        """How many leading tail events a fold may collapse.
 
-        MIN_KEEP_RECENT_EVENTS pins the newest events so the UI (which mirrors
-        `tail_events`) never loses an `action_end` in the tick it arrives — an
-        action purged that early renders as "running" forever. But the pin is
-        blind to size: when a retrieval action returns a huge payload (grep_files
-        and read_file are exempt from log-time externalization, because they ARE
-        how the agent reads externalized content back), the pin holds tens of
-        thousands of tokens verbatim and a summarization pass cannot get under
-        the threshold. The next event re-triggers it and the SAME chunk gets
-        folded on the second try — one entirely wasted blocking LLM call per
-        oversized event.
+        The keep-recent window decides, except that a fold never reaches an
+        event the model has not received. The router asks for a fold right
+        after actions return, before their results are sent; folding those
+        results then hands the agent a summary or a pointer of output it never
+        saw, and it runs the same read again, which overflows again.
+        """
+        cutoff = self._find_token_cutoff(
+            self.tail_events, self.tail_keep_after_summarize_tokens
+        )
+        first_undelivered = next(
+            (i for i, r in enumerate(self.tail_events) if not r.delivered),
+            len(self.tail_events),
+        )
+        return min(cutoff, first_undelivered)
 
-        Shrinking in place satisfies both constraints: the record survives with
-        its `action_id` intact so the UI still pairs start↔end, and its message
-        becomes a pointer the agent can re-read on demand. Caller holds the lock.
+    def _collapse_oversize(self, records: List[EventRecord]) -> int:
+        """Externalize every oversized message among ``records``, in place.
+
+        The record survives with its `action_id` intact so the UI (which
+        mirrors `tail_events`) still pairs start↔end, and its message becomes
+        a pointer the agent can re-read on demand. Action schemas stay
+        verbatim on purpose; summarize_by_LLM decides their fate. Caller holds
+        the lock.
 
         Returns the number of tokens reclaimed.
         """
@@ -462,12 +473,11 @@ class EventStream:
             return 0
 
         reclaimed = 0
-        for rec in self.tail_events[cutoff:]:
+        for rec in records:
             message = rec.event.message
             if len(message) <= MAX_EVENT_INLINE_CHARS:
                 continue
             if rec.event.event_type is EventType.ACTION_SCHEMAS:
-                # Kept verbatim on purpose; summarize_by_LLM decides its fate.
                 continue
             pointer = self._externalize_message(
                 message, action_name=rec.event.action_name, force=True
@@ -480,13 +490,58 @@ class EventStream:
             rec._cached_tokens = None
             reclaimed += before - get_cached_token_count(rec)
 
+        self._total_tokens -= reclaimed
+        return reclaimed
+
+    def _shrink_pinned_oversize(self, cutoff: int) -> int:
+        """Externalize oversized events the model has read in the surviving tail.
+
+        MIN_KEEP_RECENT_EVENTS pins the newest events so the UI never loses an
+        `action_end` in the tick it arrives — an action purged that early
+        renders as "running" forever. But the pin is blind to size: when a
+        retrieval action returns a huge payload (grep_files and read_file are
+        exempt from log-time externalization, because they ARE how the agent
+        reads externalized content back), the pin holds tens of thousands of
+        tokens verbatim and a summarization pass cannot get under the
+        threshold.
+
+        Only delivered records are shrunk: the agent has consumed them in its
+        own turn, so the only thing left to do with them is stop paying for
+        them every prompt. Caller holds the lock.
+
+        Returns the number of tokens reclaimed.
+        """
+        reclaimed = self._collapse_oversize(
+            [r for r in self.tail_events[cutoff:] if r.delivered]
+        )
         if reclaimed:
-            self._total_tokens -= reclaimed
             logger.info(
                 f"[EventStream] Collapsed oversized pinned event(s) in place, "
                 f"reclaiming {reclaimed} tokens (now {self._total_tokens})"
             )
         return reclaimed
+
+    def collapse_undelivered_oversize(self) -> int:
+        """Externalize oversized events the model has not received yet.
+
+        For the router only, when a request still does not fit after a fold:
+        the fold keeps at most keep_recent_tokens of what the model had read
+        (new events count against it), so the events it has not received are
+        too large to send in full. Pointers are the only way to hand them over.
+
+        Returns the number of tokens reclaimed (0: nothing left to shrink).
+        """
+        with self._lock:
+            reclaimed = self._collapse_oversize(
+                [r for r in self.tail_events if not r.delivered]
+            )
+            if reclaimed:
+                logger.warning(
+                    f"[EventStream] New events do not fit any request in full; "
+                    f"collapsed the oversized ones to pointers, reclaiming "
+                    f"{reclaimed} tokens (now {self._total_tokens})"
+                )
+            return reclaimed
 
     def summarize_by_LLM(self) -> None:
         """
@@ -501,29 +556,26 @@ class EventStream:
         if not self.tail_events:
             return
 
-        # Find cutoff based on tokens to keep
-        cutoff = self._find_token_cutoff(
-            self.tail_events, self.tail_keep_after_summarize_tokens
-        )
+        # Find cutoff based on tokens to keep (never past what the model has read)
+        cutoff = self._fold_cutoff()
 
         # Collapse anything oversized that the recent-event pin is holding
         # verbatim BEFORE deciding whether an LLM call is warranted — that alone
         # often drops the stream back under the threshold for free.
         if self._shrink_pinned_oversize(cutoff):
             # Budget changed; the fold boundary moves with it.
-            cutoff = self._find_token_cutoff(
-                self.tail_events, self.tail_keep_after_summarize_tokens
-            )
+            cutoff = self._fold_cutoff()
 
         if cutoff <= 0:
             # Nothing old enough to summarize
             return
 
         # Split the region being folded:
-        # - protected events (e.g. requirements) stay verbatim at the front of
-        #   the surviving tail, as do action schemas whose actions the kept
-        #   tail still calls (the agent is mid-use; folding them would make it
-        #   load them again next turn);
+        # - the newest event of each protected kind (e.g. requirements) stays
+        #   verbatim at the front of the surviving tail; older ones are
+        #   superseded snapshots and fold like any other event. So do action
+        #   schemas whose actions the kept tail still calls (the agent is
+        #   mid-use; folding them would make it load them again next turn);
         # - every other action schema is dropped without a summary: it is a
         #   copy of the registry, and add_action_sets brings it back on demand;
         # - the rest is the chunk the LLM summarizes.
@@ -533,11 +585,16 @@ class EventStream:
             for r in self.tail_events[cutoff:]
             if r.event.action_name
         }
+        newest_protected = {
+            r.event.kind: r
+            for r in self.tail_events
+            if r.event.kind in PROTECTED_SUMMARY_KINDS
+        }
         protected: List[EventRecord] = []
         dropped_schemas: List[EventRecord] = []
         chunk: List[EventRecord] = []
         for r in region:
-            if r.event.kind in PROTECTED_SUMMARY_KINDS:
+            if newest_protected.get(r.event.kind) is r:
                 protected.append(r)
             elif r.event.event_type is EventType.ACTION_SCHEMAS:
                 if in_use.intersection(r.event.schema_actions or ()):
@@ -557,9 +614,10 @@ class EventStream:
         chunk_tokens = sum(get_cached_token_count(r) for r in chunk)
         if chunk_tokens < MIN_FOLD_TOKENS:
             # The foldable region is smaller than the LLM call is worth — the tail
-            # is dominated by events we're required to keep (protected kinds, or
-            # the recent-event pin). Prune the chunk without a summary rather than
-            # burn ~15s and a full prompt to reclaim a rounding error. Losing this
+            # is dominated by events we're required to keep (protected kinds, the
+            # recent-event pin, or events the model has not received yet). Prune
+            # the chunk without a summary rather than burn ~15s and a full
+            # prompt to reclaim a rounding error. Losing this
             # little detail is cheaper than the alternative, which is re-triggering
             # on every subsequent log() call.
             logger.warning(
@@ -754,6 +812,18 @@ class EventStream:
 
     # ───────────────────── Session Cache Delta Tracking ─────────────────────
 
+    def mark_delivered(self) -> None:
+        """Record that the model has received every event now in the tail.
+
+        Called once a request carrying the stream has been answered: through
+        mark_session_synced on the session-cache paths, and by the router
+        after a stateless request. Events logged later stay undelivered until
+        the next answered request, so a fold cannot collapse them first.
+        """
+        with self._lock:
+            for rec in self.tail_events:
+                rec.delivered = True
+
     def mark_session_synced(self, call_type: str) -> None:
         """
         Mark that all current events have been synced to the session cache.
@@ -765,6 +835,7 @@ class EventStream:
             call_type: The type of LLM call (e.g., "action_selection", "gui_action_selection")
         """
         with self._lock:
+            self.mark_delivered()
             # Store the current tail length as the sync point
             self._session_sync_points[call_type] = len(self.tail_events)
             logger.debug(

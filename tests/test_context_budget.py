@@ -283,6 +283,7 @@ def test_the_event_stream_never_folds_on_its_own(event_stream_limits):
         es.log("action_end", f"action {i} produced output " + "x " * 50)
     assert llm.calls == 0 and es.head_summary is None
 
+    es.mark_delivered()
     es.summarize_by_LLM()
     assert llm.calls == 1 and es.head_summary is not None
 

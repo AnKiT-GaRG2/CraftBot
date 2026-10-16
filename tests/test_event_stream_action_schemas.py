@@ -75,6 +75,7 @@ def test_a_fold_never_collapses_schemas_in_place(tmp_path, event_stream_limits):
     es, _ = _stream(tmp_path, event_stream_limits, keep_recent_tokens=100_000)
     _fill(es, 5)
     _log_schemas(es, ["send_gmail"], body="s " * MAX_EVENT_INLINE_CHARS)
+    es.mark_delivered()
 
     es.summarize_by_LLM()
 
@@ -87,6 +88,7 @@ def test_schemas_in_use_survive_a_fold(tmp_path, event_stream_limits):
     _log_schemas(es, ["send_gmail", "list_gmail"])
     _fill(es, 40)
     _log_call(es, "send_gmail")  # newest: in the kept tail
+    es.mark_delivered()
 
     es.summarize_by_LLM()
 
@@ -105,6 +107,7 @@ def test_unused_schemas_are_dropped_unsummarized_with_a_note(
     _log_schemas(es, ["post_discord"])
     _log_call(es, "post_discord")  # used, but long ago
     _fill(es, 40)
+    es.mark_delivered()
 
     es.summarize_by_LLM()
 
@@ -129,6 +132,7 @@ def test_only_schemas_old_enough_are_dropped_without_an_llm_call(
     es, llm = _stream(tmp_path, event_stream_limits, keep_recent_tokens=600)
     _log_schemas(es, ["post_discord"], body="s " * 3000)
     _fill(es, 2)
+    es.mark_delivered()
 
     es.summarize_by_LLM()
 

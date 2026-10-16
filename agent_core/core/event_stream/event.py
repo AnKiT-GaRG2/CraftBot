@@ -271,12 +271,16 @@ class EventRecord:
         ts: Timestamp for this record
         repeat_count: Number of times this event was repeated (for deduplication)
         _cached_tokens: Cached token count (computed lazily)
+        delivered: Whether a request the model answered carried this record
+            (set by EventStream.mark_delivered). A fold only collapses
+            delivered records; not persisted.
     """
 
     event: Event
     ts: datetime = field(default_factory=lambda: datetime.now(timezone.utc))
     repeat_count: int = 1
     _cached_tokens: int | None = field(default=None, repr=False)
+    delivered: bool = field(default=False, repr=False)
 
     def to_dict(self) -> Dict[str, Any]:
         """Serialize the event record to a dictionary for persistence."""
