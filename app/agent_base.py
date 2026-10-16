@@ -361,7 +361,10 @@ class AgentBase:
             idempotency_guard=ActivityLogGuard(self.activity_log),
         )
         self.action_router = ActionRouter(
-            self.action_library, self.llm, self.context_engine
+            self.action_library,
+            self.llm,
+            self.context_engine,
+            prompt_filter=self._filter_action_prompt,
         )
 
         self.session_manager = SessionManager(
@@ -437,6 +440,9 @@ class AgentBase:
             event_stream_manager=self.event_stream_manager,
             llm_interface=self.llm,
         )
+        # A stream is removed when a sub-agent finishes or a chat is deleted:
+        # either way its Mini Browser tabs are no longer anyone's.
+        self.event_stream_manager.add_removal_listener(self._release_mini_browser_owner)
 
         InternalActionInterface.initialize(
             self.llm,
@@ -534,10 +540,15 @@ class AgentBase:
     async def delete_session(self, session_id: str) -> bool:
         """Delete a session: triggers, runtime lane, streams, persistence."""
         session = self.session_manager.get(session_id)
-        if not session or session.type == SessionType.MAIN:
+        # The main session and the Mini Browser page's dedicated chat are
+        # fixtures of the UI; they can be cleared but never deleted.
+        if not session or session.type in (SessionType.MAIN, SessionType.MINI_BROWSER):
             return False
         await self.trigger_service.cancel_sessions([session_id])
-        return self.session_manager.delete_session(session_id)
+        deleted = self.session_manager.delete_session(session_id)
+        if deleted:
+            self._notify_mini_browser("release_owner", session_id)
+        return deleted
 
     async def clear_session(self, session_id: str) -> bool:
         """Clear a session's conversation (event stream, todos, budgets).
@@ -899,15 +910,52 @@ class AgentBase:
         prompt doesn't accumulate every background skill permanently. The
         run's action sets are delivered as schemas into the event stream,
         the same read add_action_sets does, so they never touch <actions>.
+
+        A user skill picked for the run (``/skill`` slash command, a
+        scheduled task's ``skills``) also brings the action sets its
+        SKILL.md declares, exactly like ``use_skill`` does.
         """
         skills = payload.get("workflow_skills") or []
-        sets = payload.get("workflow_action_sets") or []
+        sets = list(payload.get("workflow_action_sets") or [])
+        for set_name in self._user_skill_action_sets(skills):
+            if set_name not in sets:
+                sets.append(set_name)
         for skill_name in skills:
             self.session_manager.add_skill(session.id, skill_name)
         if skills:
             self._invalidate_session_caches(session.id)
         if sets:
             InternalActionInterface.load_action_sets(sets, session_id=session.id)
+
+    @staticmethod
+    def _user_skill_action_sets(skill_names: Iterable[str]) -> list[str]:
+        """Action sets declared by the given enabled, user-invocable skills.
+
+        System workflow skills (memory, heartbeat, planners, ...) are
+        skipped: their runs pass the sets they need explicitly, and loading
+        everything their SKILL.md lists (whole integration sets for the
+        planners) would bloat the main session for good.
+        """
+        if not skill_names:
+            return []
+        try:
+            from agent_core.core.impl.skill.manager import skill_manager
+
+            sets: list[str] = []
+            for name in skill_names:
+                skill = skill_manager.get_skill(name)
+                if skill is None or skill.is_system or not skill.enabled:
+                    continue
+                declared = skill.metadata.action_sets or []
+                if isinstance(declared, str):
+                    declared = [declared]
+                for set_name in declared:
+                    if set_name and set_name not in sets:
+                        sets.append(set_name)
+            return sets
+        except Exception as e:
+            logger.warning(f"[SKILL] Could not read action sets of {skill_names}: {e}")
+            return []
 
     def _remove_workflow_capabilities(self, session: Session, payload: dict) -> None:
         """Unload a run's workflow skills when the run ends."""
@@ -1032,6 +1080,9 @@ class AgentBase:
             self._persist_session_stream(session_id)
         else:
             self.busy_sessions.add(session_id)
+        # The Mini Browser marks this session's tabs busy/idle (the user's
+        # input on a busy agent's tab hands control to the user).
+        self._notify_mini_browser("on_run_state", session_id, state)
         if self.ui_controller:
             try:
                 from app.ui_layer.events import UIEvent, UIEventType
@@ -1050,6 +1101,61 @@ class AgentBase:
                 )
             except Exception:
                 pass
+
+    @staticmethod
+    def _notify_mini_browser(hook: str, *args: object, **kwargs: object) -> None:
+        """Forward a run/session lifecycle event to the Mini Browser.
+
+        ``app.mini_browser.lifecycle`` hooks are thread-safe, never start the
+        browser, never block and never raise. This wrapper also guards the
+        import, so a missing or broken Mini Browser can never disturb the
+        agent loop (or the sub-agent thread a removal listener runs on).
+        """
+        try:
+            from app.mini_browser import lifecycle
+
+            getattr(lifecycle, hook)(*args, **kwargs)
+        except Exception as e:
+            logger.debug(f"[MINI_BROWSER] lifecycle.{hook} failed: {e}")
+
+    def _reload_mini_browser_settings(
+        self, new_settings: object, old_settings: object
+    ) -> None:
+        """settings.json hot-reload callback: when the ``mini_browser`` section
+        changed, the running browser re-reads its settings (a no-op while the
+        browser was never started; launch-only keys apply at the next start).
+        """
+        old = (
+            old_settings.get("mini_browser") if isinstance(old_settings, dict) else None
+        )
+        new = (
+            new_settings.get("mini_browser") if isinstance(new_settings, dict) else None
+        )
+        if old != new:
+            self._notify_mini_browser("reload_settings")
+
+    def _release_mini_browser_owner(self, session_id: str, _stream: object) -> None:
+        """Event-stream removal listener: a sub-agent finished or a chat was
+        deleted, so its Mini Browser tabs are released. Runs on the remover's
+        thread (a sub-agent's pool thread), so it only hands work off."""
+        self._notify_mini_browser("release_owner", session_id)
+
+    async def _shutdown_mini_browser(self) -> None:
+        """Close the Mini Browser at exit so Chromium flushes the persistent
+        profile (cookies, logins). A no-op when it was never used."""
+        import sys
+
+        if "app.mini_browser.host" not in sys.modules:
+            return
+        try:
+            from app.mini_browser import lifecycle
+
+            await asyncio.wait_for(lifecycle.shutdown(), 15)
+            logger.info("[SHUTDOWN] Mini Browser closed")
+        except asyncio.TimeoutError:
+            logger.warning("[SHUTDOWN] Mini Browser did not close within 15s")
+        except Exception as e:
+            logger.warning(f"[SHUTDOWN] Mini Browser close failed: {e}")
 
     def _persist_session_stream(self, session_id: str) -> None:
         """Persist one session's event stream to SessionStorage.
@@ -1579,6 +1685,10 @@ class AgentBase:
         """
         logger.info(f"[RUN] User requested stop for session {session_id}")
         self._emit_run_state(session_id, "stopping")
+        # Stop the session's browser work first: in-flight Mini Browser ops
+        # are cancelled and its sub-agents (which a turn cancel never reaches,
+        # they run on their own threads) lose browser access for good.
+        self._notify_mini_browser("cancel_owner", session_id, include_children=True)
         try:
             stopped = await self.session_runtime.request_stop(session_id)
         except Exception:
@@ -1595,6 +1705,9 @@ class AgentBase:
         Called by the session runtime after the turn task is cancelled and
         queued continuations are purged.
         """
+        # Safety net for browser work that started after request_run_stop
+        # cancelled the session's Mini Browser ops (e.g. a sub-agent step).
+        self._notify_mini_browser("cancel_owner", session_id, include_children=True)
 
         # FACTORY: the stop is recorded as INTENT. A paused arc never
         # auto-resumes — without this, the machine later read the phantom
@@ -2884,12 +2997,58 @@ class AgentBase:
         This is automatically included in the role info for subclasses to use.
         """
         if self._interface_mode == "browser":
-            return (
+            prompt = (
                 "\n\n## File Sharing\n"
                 "You can send files to the user using the `send_message_with_attachment` action. "
                 "Use this when the user asks you to share, send, or provide a file from the workspace."
             )
+            if self._mini_browser_usable():
+                prompt += (
+                    "\n\n## Mini Browser\n"
+                    "The user can watch your Mini Browser tabs live in the Mini Browser page and "
+                    "take control of them. When a site needs the user (a CAPTCHA, a sign-in with no "
+                    "saved login), tell them (send_message with continue_work=true) to do it there, "
+                    "then call `mini_browser_wait` with for_user=true: it returns once they have "
+                    "taken control of your tab and handed it back. If it times out, ask them in "
+                    "chat as your final message. Ask for a 2FA code in chat; never guess one."
+                )
+            return prompt
         return ""
+
+    @staticmethod
+    def _mini_browser_usable() -> bool:
+        """Whether agents should be steered to the Mini Browser here.
+
+        True only while its action set is registered (an upgraded install
+        or a failed import can lack it) and the browser has not failed to
+        launch in this process (no Chromium, no Playwright, or a launch the
+        system cannot run, e.g. a Docker image without Chromium's libraries).
+        Never starts anything and never raises.
+        """
+        try:
+            from app.action.action_set import action_set_manager
+            from app.mini_browser import ACTION_SET
+
+            if ACTION_SET not in action_set_manager.list_all_sets():
+                return False
+        except Exception:
+            return False
+        try:
+            from app.mini_browser import lifecycle
+
+            unavailable_reason = getattr(lifecycle, "unavailable_reason", None)
+            return unavailable_reason is None or unavailable_reason() is None
+        except Exception as e:
+            logger.debug(f"[MINI_BROWSER] availability check failed: {e}")
+            return False
+
+    def _filter_action_prompt(self, prompt: str) -> str:
+        """Drop the always-on Mini Browser rule while the browser is not usable."""
+        from agent_core.core.prompts.action import MINI_BROWSER_RULE
+
+        if MINI_BROWSER_RULE not in prompt or self._mini_browser_usable():
+            return prompt
+        return prompt.replace(MINI_BROWSER_RULE, "", 1)
 
     def _generate_role_info_prompt(self) -> str:
         """
@@ -2951,7 +3110,16 @@ class AgentBase:
             logger.warning(f"[RESET] Failed to clear activity log: {e}")
         self.state_manager.reset()
         self.event_stream_manager.clear_all()
+        # clear_all() drops every stream but main's, while the sessions that
+        # outlive a reset (the Mini Browser chat, Agent App sessions) stay
+        # registered. Give them their own stream back FIRST: an id without
+        # one falls back to MAIN's stream, so their runs would read and write
+        # main's history (and clearing them would empty main's stream).
+        self._recreate_session_streams()
         self.session_manager.clear_session(MAIN_SESSION_ID)
+        for session in list(self.session_manager.sessions.values()):
+            if session.type in (SessionType.AGENT_APP, SessionType.MINI_BROWSER):
+                self._clear_surviving_session(session)
 
         # 2. Stop file watcher to prevent interference during reset
         if hasattr(self, "memory_file_watcher") and self.memory_file_watcher.is_running:
@@ -2982,8 +3150,40 @@ class AgentBase:
 
         # Recreate a fresh main session after the wipe.
         self.session_manager.ensure_main()
+        # Step 7 also deleted the rows of the sessions that survive the reset:
+        # persist them again so a restart restores them (and their streams).
+        for session_id in list(self.session_manager.sessions):
+            self.session_manager.persist(session_id)
 
         return "Agent state reset. Agent file system reinitialized."
+
+    def _recreate_session_streams(self) -> None:
+        """Give every registered non-main session its own event stream again."""
+        for session in list(self.session_manager.sessions.values()):
+            if session.id == MAIN_SESSION_ID:
+                continue
+            try:
+                workspace = (
+                    Path(session.workspace_dir) if session.workspace_dir else None
+                )
+                self.event_stream_manager.create_stream(session.id, workspace)
+            except Exception as e:
+                logger.warning(
+                    f"[RESET] Failed to recreate the event stream of {session.id}: {e}"
+                )
+
+    def _clear_surviving_session(self, session: Session) -> None:
+        """Clear a session that outlives a reset, always in its OWN stream
+        (clearing an id without a stream would empty main's instead)."""
+        try:
+            if not self.event_stream_manager.has_stream(session.id):
+                workspace = (
+                    Path(session.workspace_dir) if session.workspace_dir else None
+                )
+                self.event_stream_manager.create_stream(session.id, workspace)
+            self.session_manager.clear_session(session.id)
+        except Exception as e:
+            logger.warning(f"[RESET] Failed to clear session {session.id}: {e}")
 
     async def _delete_all_chat_sessions(self) -> int:
         """Delete every non-main, non-agent-app session. Returns count."""
@@ -3038,7 +3238,10 @@ class AgentBase:
                 get_usage_storage().clear_events()
                 self.session_manager.clear_session(MAIN_SESSION_ID)
                 for session in list(self.session_manager.sessions.values()):
-                    if session.type == SessionType.AGENT_APP:
+                    if session.type in (
+                        SessionType.AGENT_APP,
+                        SessionType.MINI_BROWSER,
+                    ):
                         self.session_manager.clear_session(session.id)
                 done.append(f"sessions ({count} chats deleted)")
             except Exception as e:
@@ -3721,6 +3924,12 @@ class AgentBase:
 
             settings_manager.register_reload_callback(_reinit_llm_on_model_change)
 
+            # Mini Browser: edits to settings.json's "mini_browser" section
+            # reach a running browser instead of waiting for a restart.
+            settings_manager.register_reload_callback(
+                self._reload_mini_browser_settings
+            )
+
             # Get event loop for async callbacks
             event_loop = asyncio.get_event_loop()
 
@@ -4184,6 +4393,9 @@ class AgentBase:
                 await self.session_runtime.stop()
             except Exception as e:
                 logger.warning(f"[SHUTDOWN] Session runtime stop failed: {e}")
+            # Close the Mini Browser while the loop still runs (no turn is
+            # mid-flight now): Chromium flushes the profile and exits cleanly.
+            await self._shutdown_mini_browser()
             # Persist all sessions before shutdown (for crash recovery)
             self._persist_all_sessions()
             # Shutdown scheduler (handles all periodic tasks including memory processing)

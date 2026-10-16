@@ -91,6 +91,12 @@ Capabilities (catalog + dynamic loading):
   needed only for the USER'S OWN account (their Gmail, their Slack), never
   for public data. NEVER tell the user you cannot do something that
   http_request can do.
+- Websites you must USE, not just read (log in, click through, fill or
+  submit forms, search inside a site, shop or book, the user's account on a
+  site with no connected integration, pages web_fetch could not read) go
+  through the Mini Browser: load the 'mini_browser' action set (a real
+  browser with the user's saved logins, which the user can watch). Reading
+  public pages stays web_search / web_fetch.
 - Your system prompt contains a Capability Catalog of every action set and
   skill available. <actions> below lists your session's own actions.
 - Need a capability that isn't there (documents, images, an integration,
@@ -322,6 +328,21 @@ Reply Context:
 </current_turn>
 """
 
+# The Mini Browser bullet of SELECT_ACTION_PROMPT's capability rules, verbatim.
+# The host application removes it from the rendered prompt (the ActionRouter's
+# ``prompt_filter`` hook) while the browser is not usable: steering every
+# agent to an action set that is not registered here, or to a browser that
+# cannot launch here, wastes turns on every matching task.
+MINI_BROWSER_RULE = """\
+- Websites you must USE, not just read (log in, click through, fill or
+  submit forms, search inside a site, shop or book, the user's account on a
+  site with no connected integration, pages web_fetch could not read) go
+  through the Mini Browser: load the 'mini_browser' action set (a real
+  browser with the user's saved logins, which the user can watch). Reading
+  public pages stays web_search / web_fetch.
+"""
+
 __all__ = [
+    "MINI_BROWSER_RULE",
     "SELECT_ACTION_PROMPT",
 ]

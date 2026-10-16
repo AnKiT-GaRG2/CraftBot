@@ -895,6 +895,15 @@ class BrowserAdapter(InterfaceAdapter):
         # Latest build todo list per Agent App, replayed to reconnecting tabs.
         self._agent_app_todos: Dict[str, list] = {}
         self._metrics_subscribers: Set = set()
+        # Mini Browser page: its viewers, live view and requests. Constructing
+        # it starts nothing (no browser thread, no Chromium).
+        try:
+            from app.mini_browser.ws import MiniBrowserWS
+
+            self._mini_browser_ws: Optional[Any] = MiniBrowserWS(self)
+        except Exception as e:
+            self._mini_browser_ws = None
+            logger.warning(f"[BROWSER ADAPTER] Mini Browser unavailable: {e}")
         self._runner: Optional["web.AppRunner"] = None
         self._started_at: float = 0.0
         self._ws_prepare_failures: int = 0
@@ -986,6 +995,13 @@ class BrowserAdapter(InterfaceAdapter):
     def metrics_collector(self) -> MetricsCollector:
         """Get the metrics collector for dashboard data."""
         return self._metrics_collector
+
+    @property
+    def ui_hosts(self) -> frozenset:
+        """Lowercase ``host:port`` pairs this UI is served from (the /ws Host
+        allowlist). The Mini Browser refuses to open them: a page there could
+        fetch the session token and drive the agent."""
+        return frozenset(self._ws_auth.allowed_hosts)
 
     async def submit_message(
         self,
@@ -1169,6 +1185,8 @@ A quick Q&A will now begin to understand your objectives to serve you better:"""
         self._started_at = time.monotonic()
         self._loop_monitor.start()
         get_resource_notifier().bind(asyncio.get_running_loop(), self._broadcast)
+        if self._mini_browser_ws is not None:
+            self._mini_browser_ws.on_start()
         # Changes the agent and background jobs make outside UI handlers.
         try:
             self._change_detection = ChangeDetection(self._controller.event_bus)
@@ -1212,6 +1230,11 @@ A quick Q&A will now begin to understand your objectives to serve you better:"""
         # Close integration bridge HTTP client
         if hasattr(self, "_integration_bridge"):
             await self._integration_bridge.cleanup()
+
+        # Close the Mini Browser while the loop still runs (Chromium holds a
+        # lock on its profile until it exits).
+        if getattr(self, "_mini_browser_ws", None) is not None:
+            await self._mini_browser_ws.shutdown()
 
         # Cancel metrics broadcasting task
         if self._metrics_task:
@@ -1398,6 +1421,9 @@ A quick Q&A will now begin to understand your objectives to serve you better:"""
         finally:
             self._ws_clients.discard(ws)
             self._metrics_subscribers.discard(ws)
+            mini_browser = getattr(self, "_mini_browser_ws", None)
+            if mini_browser is not None:
+                mini_browser.forget(ws)
             closing = self._channels.pop(ws, None)
             if closing is not None:
                 await closing.close()
@@ -1636,6 +1662,13 @@ A quick Q&A will now begin to understand your objectives to serve you better:"""
         elif msg_type == "open_folder":
             file_path = data.get("path", "")
             await self._handle_open_folder(file_path)
+
+        # Mini Browser page: live view, browser controls and the password
+        # vault (app/mini_browser/ws.py answers every failure itself).
+        elif isinstance(msg_type, str) and msg_type.startswith("mini_browser_"):
+            mini_browser = getattr(self, "_mini_browser_ws", None)
+            if mini_browser is not None:
+                await mini_browser.handle(ws, msg_type, data)
 
         elif msg_type == "option_click":
             value = data.get("value", "")
@@ -8550,6 +8583,17 @@ A quick Q&A will now begin to understand your objectives to serve you better:"""
             channel.send_json(_with_request_id(message))
             return
         await self._broadcast(message)
+
+    def _send_only_to(self, ws, message: Dict[str, Any]) -> bool:
+        """Send to one connection only. Unlike ``_send_to`` there is no
+        broadcast fallback: when that connection is gone the message is
+        dropped, so replies meant for one tab (saved logins) never reach
+        another. Returns whether it was queued."""
+        channel = self._channels.get(ws) if ws is not None else None
+        if channel is None or channel.closed:
+            return False
+        channel.send_json(_with_request_id(message))
+        return True
 
     async def _handle_whatsapp_start_qr(self, ws=None, force: bool = False) -> None:
         """Start a WhatsApp link flow and return the QR to the requesting

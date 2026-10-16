@@ -7,7 +7,8 @@ framework internal functions.
 
 from __future__ import annotations
 
-from typing import Dict, Any, Optional, List, TYPE_CHECKING
+import re
+from typing import Dict, Any, Iterable, Optional, List, Tuple, TYPE_CHECKING
 from app.llm import LLMInterface, LLMCallType
 from app.vlm_interface import VLMInterface
 from app.image_gen_interface import ImageGenInterface
@@ -33,6 +34,203 @@ if TYPE_CHECKING:
     from app.event_stream import EventStreamManager
     from agent_core.core.impl.action.manager import ActionManager
     from agent_core.core.impl.action.library import ActionLibrary
+
+
+_SET_NAME_SEPARATORS = re.compile(r"[\s_\-]+")
+
+
+def _set_name_key(name: str) -> str:
+    """Spelling-insensitive key of an action-set name: lowercase, with every
+    run of '-', '_' and whitespace collapsed to one '_'. Collapsing (rather
+    than deleting) keeps 'mcp_git_hub' from silently meaning 'mcp_github'."""
+    return _SET_NAME_SEPARATORS.sub("_", name.strip().lower()).strip("_")
+
+
+def _set_name_candidates(
+    text: str, known: Iterable[str], aliases: Dict[str, str]
+) -> List[str]:
+    """The real set names ``text`` may mean, best match first.
+
+    The exact spelling wins, then the lowercase one (MCP set names keep their
+    server's hyphens, e.g. ``mcp_playwright-mcp``, and two real names may
+    differ only in '-' vs '_'), then any known name or alias (renamed sets,
+    e.g. ``web_agent``) with the same :func:`_set_name_key` — in either
+    direction. More than one candidate means the request is ambiguous.
+    """
+    known_set = set(known)
+    lowered = text.lower()
+    for spelling in (text, lowered):
+        for candidate in (spelling, aliases.get(spelling)):
+            if candidate and candidate in known_set:
+                return [candidate]
+    key = _set_name_key(text)
+    if not key:
+        return []
+    matches = sorted(name for name in known_set if _set_name_key(name) == key)
+    if not matches:
+        targets = {
+            target
+            for alias, target in aliases.items()
+            if _set_name_key(alias) == key and target in known_set
+        }
+        matches = sorted(targets)
+    return matches
+
+
+def _resolve_action_set_names(
+    names: Iterable[Any], known: Iterable[str], aliases: Dict[str, str]
+) -> Tuple[List[str], List[str]]:
+    """Map requested action-set names onto real set names.
+
+    Matching is lenient about case and about '-', '_' and spaces in either
+    direction (see :func:`_set_name_candidates`); a name that matches two
+    real sets equally well is left unresolved rather than guessed.
+
+    Returns ``(resolved, unknown)``, both de-duplicated in request order.
+    """
+    known_list = list(known)
+    resolved: List[str] = []
+    unknown: List[str] = []
+    for raw in names:
+        text = str(raw).strip() if raw is not None else ""
+        if not text:
+            continue
+        candidates = _set_name_candidates(text, known_list, aliases)
+        if len(candidates) != 1:
+            if text not in unknown:
+                unknown.append(text)
+        elif candidates[0] not in resolved:
+            resolved.append(candidates[0])
+    return resolved, unknown
+
+
+def _configured_mcp_set_names() -> List[str]:
+    """Action-set names of every MCP server in the loaded MCP config (enabled
+    or not, connected or not); empty when MCP was never initialized."""
+    try:
+        from agent_core import mcp_client
+
+        config = mcp_client.config
+        servers = list(config.mcp_servers) if config is not None else []
+        return [server.resolved_action_set_name for server in servers]
+    except Exception:
+        return []
+
+
+def _skill_named(name: str) -> Optional[str]:
+    """The loadable skill a (possibly mis-spelled) name refers to, if any."""
+    try:
+        from agent_core.core.impl.skill.manager import skill_manager
+    except Exception:
+        return None
+    lowered = name.strip().lower()
+    for candidate in (lowered, lowered.replace("_", "-").replace(" ", "-")):
+        skill = skill_manager.get_skill(candidate)
+        if skill is not None and (skill.enabled or skill.is_system):
+            return skill.name
+    return None
+
+
+def _close_set_names(key: str, names: Iterable[str], *, mcp: bool = False) -> List[str]:
+    """Up to three of ``names`` whose spelling-insensitive key is close to ``key``.
+
+    ``mcp``: compare MCP set names by their distinctive part only (every one
+    shares the ``mcp_`` prefix and often a ``_mcp`` suffix, which would make
+    any two of them look alike).
+    """
+    import difflib
+
+    def core(text: str) -> str:
+        if not mcp:
+            return text
+        text = text[4:] if text.startswith("mcp_") else text
+        for suffix in ("_mcp", "_server"):
+            if text.endswith(suffix) and len(text) > len(suffix):
+                text = text[: -len(suffix)]
+        return text
+
+    by_key: Dict[str, str] = {}
+    for name in sorted(names):
+        by_key.setdefault(core(_set_name_key(name)), name)
+    cutoff = 0.7 if mcp else 0.6
+    close = difflib.get_close_matches(core(key), list(by_key), n=3, cutoff=cutoff)
+    return [by_key[k] for k in close]
+
+
+def _unknown_action_sets_hint(
+    unknown: List[str],
+    known: Iterable[str],
+    curated: Iterable[str] = (),
+    aliases: Optional[Dict[str, str]] = None,
+) -> str:
+    """Tell the model how to fix set names that matched nothing.
+
+    ``curated`` are the set names with a built-in description: one of those
+    that matched nothing exists in name only (its actions moved to core, or
+    its feature is missing from this installation). An ``mcp_`` name is
+    reported as a disconnected MCP server only when it really is a configured
+    server without actions; a misspelling of a connected one gets the right
+    name instead.
+    """
+    known_list = sorted(known)
+    curated_keys = {_set_name_key(name) for name in curated}
+    parts: List[str] = []
+    for name in unknown:
+        skill = _skill_named(name)
+        if skill:
+            parts.append(
+                f"'{name}' is a skill, not an action set: load it with use_skill('{skill}')."
+            )
+            continue
+        candidates = _set_name_candidates(name, known_list, aliases or {})
+        if len(candidates) > 1:
+            parts.append(
+                f"'{name}' matches several action sets ({', '.join(candidates)}); "
+                "use the exact name."
+            )
+            continue
+        key = _set_name_key(name)
+        if key.startswith("mcp_"):
+            connected = [n for n in known_list if _set_name_key(n).startswith("mcp_")]
+            close = _close_set_names(key, connected, mcp=True)
+            configured = [
+                n
+                for n in _configured_mcp_set_names()
+                if _set_name_key(n) == key and n not in known_list
+            ]
+            if close:
+                parts.append(
+                    f"'{name}' is not an action set; did you mean {', '.join(close)}?"
+                )
+            elif configured:
+                parts.append(
+                    f"'{name}' ({configured[0]}) has no actions right now: its "
+                    "MCP server is not connected (see ## MCP in AGENT.md)."
+                )
+            else:
+                parts.append(
+                    f"'{name}' is not an action set: no MCP server with that name "
+                    "is configured (see ## MCP in AGENT.md)."
+                )
+            continue
+        if key in curated_keys:
+            parts.append(
+                f"'{name}' has no actions in this build; check whether an action "
+                "you already have (core) does the job."
+            )
+            continue
+        close = _close_set_names(key, known_list)
+        if close:
+            parts.append(
+                f"'{name}' is not an action set; did you mean {', '.join(close)}?"
+            )
+        else:
+            parts.append(f"'{name}' is not an action set.")
+    parts.append(
+        "Use set names exactly as listed in the Capability Catalog "
+        "(list_action_sets shows them all)."
+    )
+    return " ".join(parts)
 
 
 class InternalActionInterface:
@@ -765,6 +963,11 @@ class InternalActionInterface:
         with the workflow guidance of the integrations those actions belong
         to. The model then calls them by name like any action in <actions>.
 
+        Names are normalised (case, '-' vs '_', legacy aliases such as
+        ``web_agent`` -> ``mini_browser``) and checked against the sets that
+        actually exist. Unknown names come back as ``unknown_sets`` with a
+        ``hint``. ``success`` is False only when no valid name was given.
+
         Args:
             set_names: Action set names from the capability catalog.
             session_id: The session to deliver into.
@@ -777,7 +980,11 @@ class InternalActionInterface:
             candidate_dict_from_action,
             format_action_candidates,
         )
-        from app.action.action_set import action_set_manager
+        from app.action.action_set import (
+            DEFAULT_SET_DESCRIPTIONS,
+            SET_ALIASES,
+            action_set_manager,
+        )
         from app.data.action.integrations._integration_essentials import (
             get_essentials_for_integrations,
             integration_ids_for_action_sets,
@@ -788,16 +995,27 @@ class InternalActionInterface:
         if session is None:
             return {"success": False, "error": f"No session {sid}."}
 
-        available = action_set_manager.list_all_sets()
-        known = [s for s in dict.fromkeys(set_names) if s in available]
-        unknown = [s for s in dict.fromkeys(set_names) if s not in available]
+        if isinstance(set_names, str):
+            set_names = [set_names]
+        available = action_set_manager.get_available_set_names()
+        known, unknown = _resolve_action_set_names(
+            set_names or [], available, SET_ALIASES
+        )
+        hint = (
+            _unknown_action_sets_hint(
+                unknown, available, DEFAULT_SET_DESCRIPTIONS, SET_ALIASES
+            )
+            if unknown
+            else ""
+        )
+        if unknown:
+            logger.info(f"[ACTION_SETS] Not loading unknown action set(s): {unknown}")
         if not known:
             return {
                 "success": False,
-                "error": (
-                    f"Unknown action set(s): {unknown}. The capability catalog "
-                    "in your system prompt lists every available set."
-                ),
+                "error": "None of the requested action sets exist; nothing was loaded.",
+                "unknown_sets": unknown,
+                "hint": hint,
             }
 
         event_stream_manager = cls.state_manager.event_stream_manager
@@ -818,6 +1036,7 @@ class InternalActionInterface:
         }
         if unknown:
             result["unknown_sets"] = unknown
+            result["hint"] = hint
         if not metadata:
             result["note"] = (
                 "Every action in these sets is already in <actions> or in an "
@@ -917,8 +1136,20 @@ class InternalActionInterface:
 
         from agent_core.core.impl.skill.manager import skill_manager
 
-        # Validate skill exists and is enabled
+        # Validate skill exists and is enabled. Skill names are hyphenated
+        # while action-set names use underscores; accept either spelling.
         skill = skill_manager.get_skill(skill_name)
+        if not skill:
+            normalized = (
+                str(skill_name or "")
+                .strip()
+                .lower()
+                .replace("_", "-")
+                .replace(" ", "-")
+            )
+            skill = skill_manager.get_skill(normalized) if normalized else None
+            if skill:
+                skill_name = skill.name
         if not skill:
             return {"success": False, "error": f"Skill '{skill_name}' not found."}
         # System skills are always loadable (they are runtime-managed and never

@@ -87,3 +87,9 @@ npm-cache/
 playwright-browsers/
 
 hf-cache/
+
+# Mini Browser's persistent Chromium profile (cookies, signed-in sessions)
+# and its cross-process lock file. Its password vault lives in .credentials/
+# (ignored above). Never commit.
+**/mini_browser_profile/
+**/mini_browser_profile.lock

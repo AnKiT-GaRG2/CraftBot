@@ -15,11 +15,12 @@ from agent_core import action
     name="add_action_sets",
     description=(
         "Get the schemas of action sets from the capability catalog that are "
-        "not in <actions> (e.g. document_processing, image, an integration). "
-        "The schemas, plus workflow guidance for any integration among them, "
-        "arrive in your event stream as an action_schemas event; then call "
-        "those actions by name like any action in <actions>. Your <actions> "
-        "list itself does not change."
+        "not in <actions> (e.g. document_processing, image, mini_browser for "
+        "using websites, an integration). The schemas, plus workflow guidance "
+        "for any integration among them, arrive in your event stream as an "
+        "action_schemas event; then call those actions by name like any action "
+        "in <actions>. Your <actions> list itself does not change. Unknown "
+        "names are reported back, not loaded."
     ),
     default=False,
     mode="ALL",
@@ -28,17 +29,17 @@ from agent_core import action
         "action_sets": {
             "type": "array",
             "items": {"type": "string"},
-            "example": ["document_processing"],
+            "example": ["mini_browser"],
             "description": (
-                "List of action set names from the capability catalog. "
-                "Use 'list_action_sets' to see available options."
+                "List of action set names, exactly as in the capability "
+                "catalog. Use 'list_action_sets' to see available options."
             ),
         },
     },
     output_schema={
         "success": {
             "type": "boolean",
-            "description": "Whether at least one set exists.",
+            "description": "False only when none of the requested sets exist.",
         },
         "loaded_sets": {
             "type": "array",
@@ -54,7 +55,11 @@ from agent_core import action
         },
         "unknown_sets": {
             "type": "array",
-            "description": "Requested set names that do not exist, if any.",
+            "description": "Requested names that are not action sets (nothing was loaded for them).",
+        },
+        "hint": {
+            "type": "string",
+            "description": "How to fix unknown set names (closest matches, skills to load with use_skill).",
         },
     },
     test_payload={
@@ -131,10 +136,9 @@ def list_action_sets(input_data: dict) -> dict:
             "available_sets": {
                 "core": "Essential actions (always included)",
                 "file_operations": "File and folder manipulation",
-                "web_research": "Web search and browsing",
                 "document_processing": "PDF and document handling",
-                "clipboard": "Clipboard operations",
-                "shell": "Command line execution",
+                "image": "Image viewing, analysis, and OCR",
+                "mini_browser": "Mini Browser: operate websites in a live Chromium",
             },
             "current_sets": ["core", "file_operations"],
         }
