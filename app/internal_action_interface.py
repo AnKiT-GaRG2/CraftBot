@@ -752,57 +752,105 @@ class InternalActionInterface:
     # ───────────────── Action Set Management ─────────────────
 
     @classmethod
-    def add_action_sets(
-        cls, sets_to_add: List[str], session_id: Optional[str] = None
+    def load_action_sets(
+        cls, set_names: List[str], session_id: Optional[str] = None
     ) -> Dict[str, Any]:
         """
-        Load action sets into a session.
+        Deliver the schemas of these action sets into a session's event stream.
+
+        Loading is a read: the session's <actions> list (fixed by its type)
+        does not change. The schemas of every action in the sets that the
+        session cannot already see, in <actions> or in an earlier schema event
+        still in the stream, are logged as one ACTION_SCHEMAS event together
+        with the workflow guidance of the integrations those actions belong
+        to. The model then calls them by name like any action in <actions>.
 
         Args:
-            sets_to_add: List of action set names to add.
-            session_id: The session to load into.
+            set_names: Action set names from the capability catalog.
+            session_id: The session to deliver into.
 
         Returns:
-            Dictionary with success status and updated set information.
+            Dictionary with the loaded sets, the actions whose schemas were
+            delivered, and any set names that do not exist.
         """
-        if cls.session_manager is None:
-            raise RuntimeError(
-                "InternalActionInterface not initialized with SessionManager."
-            )
+        from agent_core.core.action_framework import (
+            candidate_dict_from_action,
+            format_action_candidates,
+        )
+        from app.action.action_set import action_set_manager
+        from app.data.action.integrations._integration_essentials import (
+            get_essentials_for_integrations,
+            integration_ids_for_action_sets,
+        )
 
         sid = session_id or cls._get_current_session_id()
-        result = cls.session_manager.add_action_sets(sid, sets_to_add)
+        session = cls.session_manager.get(sid) if cls.session_manager else None
+        if session is None:
+            return {"success": False, "error": f"No session {sid}."}
 
-        # Invalidate session cache - action list has changed
-        cls._invalidate_action_selection_caches(sid)
+        available = action_set_manager.list_all_sets()
+        known = [s for s in dict.fromkeys(set_names) if s in available]
+        unknown = [s for s in dict.fromkeys(set_names) if s not in available]
+        if not known:
+            return {
+                "success": False,
+                "error": (
+                    f"Unknown action set(s): {unknown}. The capability catalog "
+                    "in your system prompt lists every available set."
+                ),
+            }
 
-        return result
-
-    @classmethod
-    def remove_action_sets(
-        cls, sets_to_remove: List[str], session_id: Optional[str] = None
-    ) -> Dict[str, Any]:
-        """
-        Unload action sets from a session.
-
-        Args:
-            sets_to_remove: List of action set names to remove.
-            session_id: The session to unload from.
-
-        Returns:
-            Dictionary with success status and updated set information.
-        """
-        if cls.session_manager is None:
-            raise RuntimeError(
-                "InternalActionInterface not initialized with SessionManager."
+        event_stream_manager = cls.state_manager.event_stream_manager
+        visible = set(session.compiled_actions) | (
+            event_stream_manager.get_stream_by_id(sid).actions_with_schemas()
+        )
+        metadata = [
+            meta
+            for meta in action_set_manager.actions_in_sets(
+                known, mode="GUI" if session.gui_mode else "CLI"
             )
+            if meta.name not in visible
+        ]
+        result: Dict[str, Any] = {
+            "success": True,
+            "loaded_sets": known,
+            "actions": [meta.name for meta in metadata],
+        }
+        if unknown:
+            result["unknown_sets"] = unknown
+        if not metadata:
+            result["note"] = (
+                "Every action in these sets is already in <actions> or in an "
+                "action_schemas event in your event stream."
+            )
+            return result
 
-        sid = session_id or cls._get_current_session_id()
-        result = cls.session_manager.remove_action_sets(sid, sets_to_remove)
+        integrations = integration_ids_for_action_sets(
+            set_name for meta in metadata for set_name in meta.action_sets
+        )
+        guidance = get_essentials_for_integrations(integrations)
+        message = (
+            f"Schemas for action set(s) {', '.join(known)}. Call these actions "
+            "by name exactly like the ones in <actions>:\n"
+            + format_action_candidates(
+                [candidate_dict_from_action(meta) for meta in metadata]
+            )
+        )
+        if guidance:
+            message += "\n\n" + guidance
 
-        # Invalidate session cache - action list has changed
-        cls._invalidate_action_selection_caches(sid)
-
+        event_stream_manager.log(
+            "action_schemas",
+            message,
+            event_type=EventType.ACTION_SCHEMAS,
+            schema_actions=result["actions"],
+            task_id=sid,
+        )
+        cls.state_manager.bump_event_stream()
+        logger.info(
+            f"[ACTION SETS] Delivered {len(metadata)} action schema(s) from "
+            f"{known} into session {sid}"
+        )
         return result
 
     @classmethod
@@ -811,7 +859,8 @@ class InternalActionInterface:
         List all available action sets and their descriptions.
 
         Returns:
-            Dictionary with available sets and this session's loaded sets.
+            Dictionary with available sets and the sets this session prints
+            in <actions> (fixed by its type; core is always included).
         """
         from app.action.action_set import action_set_manager
 
@@ -819,7 +868,9 @@ class InternalActionInterface:
         current_sets = []
         if cls.session_manager:
             sid = session_id or cls._get_current_session_id()
-            current_sets = cls.session_manager.get_action_sets(sid)
+            session = cls.session_manager.get(sid)
+            if session is not None:
+                current_sets = ["core"] + session.base_action_sets
 
         return {
             "available_sets": available_sets,
@@ -847,7 +898,8 @@ class InternalActionInterface:
     ) -> Dict[str, Any]:
         """
         Load a skill into a session (additive). Its instructions are injected
-        into the session's context and its recommended action sets are loaded.
+        into the session's context and the schemas of its recommended action
+        sets are delivered into the session's event stream.
         Invalidates and re-creates LLM session caches so the updated prompt
         takes effect.
 
@@ -891,19 +943,15 @@ class InternalActionInterface:
         except Exception:
             pass
 
-        # Add skill-recommended action sets (if any new ones)
+        # The skill's instructions changed the session block of the prompt.
+        cls._invalidate_action_selection_caches(sid)
+
+        # Deliver the schemas of the skill's recommended action sets.
         added_action_sets = []
         recommended_sets = skill_manager.get_skill_action_sets([skill_name])
         if recommended_sets:
-            current_sets = set(session.action_sets)
-            new_sets = [s for s in recommended_sets if s not in current_sets]
-            if new_sets:
-                cls.add_action_sets(new_sets, session_id=sid)  # invalidates caches
-                added_action_sets = new_sets
-            else:
-                cls._invalidate_action_selection_caches(sid)
-        else:
-            cls._invalidate_action_selection_caches(sid)
+            loaded = cls.load_action_sets(recommended_sets, session_id=sid)
+            added_action_sets = loaded.get("loaded_sets", [])
 
         logger.info(f"[SKILL] Loaded skill '{skill_name}' into session {sid}")
 

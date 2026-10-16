@@ -80,6 +80,8 @@ SKIP_UNPROCESSED_EVENT_TYPES = {
     "waiting_for_user",
     # Memory retrieval pointers — re-derivable on demand, not a distillable fact
     "relevant_memories",
+    # Action schemas — a copy of the action registry, not a distillable fact
+    "action_schemas",
 }
 
 
@@ -360,6 +362,7 @@ class EventStreamManager:
         continue_work: Optional[bool] = None,
         question: Optional[dict] = None,
         ui_artifact: Optional[dict] = None,
+        schema_actions: Optional[List[str]] = None,
         task_id: str | None = None,
     ) -> int:
         """
@@ -412,6 +415,7 @@ class EventStreamManager:
             continue_work=continue_work,
             question=question,
             ui_artifact=ui_artifact,
+            schema_actions=schema_actions,
         )
 
         # Also log to the writing session's markdown files for persistence.

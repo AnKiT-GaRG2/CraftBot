@@ -91,7 +91,7 @@ class ActionRouter:
         Raises:
             ValueError: If LLM returns invalid format 3 times consecutively.
         """
-        # Get compiled action list from the session's loaded action sets
+        # The session's <actions> list (fixed by its type)
         compiled_actions = self._get_session_compiled_actions(session_id=session_id)
 
         # Use static compiled list - NO RAG SEARCH
@@ -105,34 +105,12 @@ class ActionRouter:
         # Build the instruction prompt for the LLM
         session_state = self.context_engine.get_session_state(session_id=session_id)
 
-        # Pull just-in-time guidance for any integrations the user named.
-        # Match against both the current turn's query and the session state so
-        # the platform name from the original user request still triggers a
-        # match even after the per-turn query is generic ("Perform the next
-        # best action...").
-        try:
-            from app.data.action.integrations._integration_essentials import (
-                get_essentials_for_message,
-            )
-
-            integration_essentials = get_essentials_for_message(
-                f"{query}\n{session_state}"
-            )
-            logger.info(
-                f"[ACTION] integration essentials: "
-                f"{len(integration_essentials)} chars injected"
-            )
-        except Exception as e:
-            logger.debug(f"[ACTION] integration essentials lookup failed: {e}")
-            integration_essentials = ""
-
         decision_prompt_name = "SELECT_ACTION"
         static_prompt = SELECT_ACTION_PROMPT.format(
             session_state=session_state,
             event_stream="",  # Empty for static prompt
             query=query,
             action_candidates=self._format_candidates(action_candidates),
-            integration_essentials=integration_essentials,
         )
         candidates_text = self._format_candidates(action_candidates)
 
@@ -146,7 +124,6 @@ class ActionRouter:
                 ),
                 query=query,
                 action_candidates=candidates_text,
-                integration_essentials=integration_essentials,
             )
 
         full_prompt = render_prompt()
@@ -798,6 +775,17 @@ class ActionRouter:
 
         # Cap at 10 actions
         actions = actions[:10]
+
+        # A standalone end_turn is non-parallelizable and otherwise wins
+        # over the reply, discarding it. Telegram auto-replies end the run
+        # on successful delivery themselves. Never let a redundant stop
+        # suppress the send (including when the LLM puts end_turn first).
+        if any(
+            a.get("action_name")
+            in ("send_telegram_bot_message", "send_telegram_text_message")
+            for a in actions
+        ):
+            actions = [a for a in actions if a.get("action_name") != "end_turn"]
 
         dropped_actions = []
 

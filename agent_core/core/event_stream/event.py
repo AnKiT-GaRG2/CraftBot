@@ -25,7 +25,7 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from enum import Enum
-from typing import Any, Dict, Optional
+from typing import Any, Dict, List, Optional
 
 
 SEVERITIES = ("DEBUG", "INFO", "WARN", "ERROR")
@@ -62,6 +62,10 @@ class EventType(str, Enum):
     # stream is the session's single chronological record, and warm
     # session-cache LLM calls receive ONLY new stream events.
     TRIGGER = "trigger"
+    # Schemas of actions outside the session's <actions> list, delivered by
+    # add_action_sets (and by skills / runs that declare sets). LLM-facing
+    # reference material; `Event.schema_actions` names the actions it covers.
+    ACTION_SCHEMAS = "action_schemas"
 
 
 # Legacy `kind` → `event_type` mapping. NEW code MUST NOT call this.
@@ -148,6 +152,10 @@ class Event:
             ``{"options": ["Yes", "No"], "allow_free_text": true}``. The UI
             renders it as answer chips plus a pinned question box above the
             chat composer. None for ordinary messages.
+        schema_actions: For ACTION_SCHEMAS events only: the names of the
+            actions whose schemas the message carries. The event stream keeps
+            the event across a fold while any of these actions appears in the
+            kept tail. None for every other event.
     """
 
     message: str
@@ -165,6 +173,7 @@ class Event:
     continue_work: Optional[bool] = None
     question: Optional[Dict[str, Any]] = None
     ui_artifact: Optional[Dict[str, Any]] = None
+    schema_actions: Optional[List[str]] = None
 
     def display_text(self) -> Optional[str]:
         """
@@ -199,6 +208,7 @@ class Event:
             "continue_work": self.continue_work,
             "question": self.question,
             "ui_artifact": self.ui_artifact,
+            "schema_actions": self.schema_actions,
         }
 
     @classmethod
@@ -240,6 +250,7 @@ class Event:
             continue_work=data.get("continue_work"),
             question=data.get("question"),
             ui_artifact=data.get("ui_artifact"),
+            schema_actions=data.get("schema_actions"),
         )
 
     @property
