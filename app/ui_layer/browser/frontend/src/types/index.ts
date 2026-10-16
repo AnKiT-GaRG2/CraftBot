@@ -203,11 +203,7 @@ export type WSMessageType =
   | 'mini_browser_control'
   | 'mini_browser_adblock'
   | 'mini_browser_copy'
-  | 'mini_browser_vault_add'
-  | 'mini_browser_vault_update'
-  | 'mini_browser_vault_delete'
-  | 'mini_browser_vault_reset'
-  // Mini Browser (server → client; mini_browser_vault_list goes both ways)
+  // Mini Browser (server → client)
   | 'mini_browser_state'
   | 'mini_browser_activity'
   | 'mini_browser_frame'
@@ -217,8 +213,6 @@ export type WSMessageType =
   | 'mini_browser_install_progress'
   | 'mini_browser_nav_result'
   | 'mini_browser_clipboard'
-  | 'mini_browser_vault_list'
-  | 'mini_browser_vault_result'
   | 'state_update'
   | 'dashboard_metrics'
   | 'dashboard_metrics_filter'
@@ -1105,33 +1099,6 @@ export interface MiniBrowserInstallProgress {
 /** Payload of `mini_browser_nav_result` (address bar requests only). */
 export interface MiniBrowserNavResult {
   sessionId: string
-  ok: boolean
-  error?: MiniBrowserError
-}
-
-/** One saved login. Passwords never travel to the UI. */
-export interface MiniBrowserVaultEntry {
-  id: string
-  site: string
-  username: string
-  label: string
-  createdAt: string | number | null
-  updatedAt: string | number | null
-  lastUsedAt: string | number | null
-}
-
-export interface MiniBrowserVaultStatus {
-  ok: boolean
-  /** The vault exists but can't be decrypted; writes are refused until reset. */
-  unreadable: boolean
-  protection: 'dpapi' | 'file'
-}
-
-export type MiniBrowserVaultOp = 'add' | 'update' | 'delete' | 'reset'
-
-/** Payload of `mini_browser_vault_result`. */
-export interface MiniBrowserVaultResult {
-  op: string
   ok: boolean
   error?: MiniBrowserError
 }
