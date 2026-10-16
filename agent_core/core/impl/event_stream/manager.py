@@ -361,6 +361,7 @@ class EventStreamManager:
         platform: Optional[str] = None,
         continue_work: Optional[bool] = None,
         question: Optional[dict] = None,
+        ui_artifact: Optional[dict] = None,
         schema_actions: Optional[List[str]] = None,
         task_id: str | None = None,
     ) -> int:
@@ -413,6 +414,7 @@ class EventStreamManager:
             platform=platform,
             continue_work=continue_work,
             question=question,
+            ui_artifact=ui_artifact,
             schema_actions=schema_actions,
         )
 
