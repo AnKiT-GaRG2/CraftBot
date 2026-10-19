@@ -134,6 +134,7 @@ _MAX_INSTALL_LINE_CHARS = 500
 _MAX_VAULT_SITE_CHARS = 2048
 _MAX_VAULT_USERNAME_CHARS = 1024
 _MAX_VAULT_PASSWORD_CHARS = 4096
+_MAX_VAULT_NOTE_CHARS = 16384
 _MAX_VAULT_LABEL_CHARS = 1024
 _VAULT_CODES = frozenset(
     {
@@ -155,6 +156,8 @@ _ENTRY_FIELDS = (
     "createdAt",
     "updatedAt",
     "lastUsedAt",
+    "kind",
+    "group",
 )
 
 _STATE_TIMEOUT_S = 5.0
@@ -184,6 +187,7 @@ _HANDLERS: Dict[str, str] = {
     "mini_browser_vault_update": "_handle_vault_update",
     "mini_browser_vault_delete": "_handle_vault_delete",
     "mini_browser_vault_reset": "_handle_vault_reset",
+    "mini_browser_vault_reveal": "_handle_vault_reveal",
 }
 
 
@@ -615,7 +619,8 @@ def _public_entries(entries: Any) -> List[Dict[str, Any]]:
     if not isinstance(entries, (list, tuple)):
         return []
     return [
-        {key: _json_safe(entry.get(key)) for key in _ENTRY_FIELDS}
+        {key: _json_safe(entry.get(key)) for key in _ENTRY_FIELDS
+         if key not in ("kind", "group") or key in entry}
         for entry in entries
         if isinstance(entry, dict)
     ]
@@ -1643,17 +1648,20 @@ class MiniBrowserWS:
         )
 
     async def _handle_vault_add(self, ws: Any, data: Dict[str, Any]) -> None:
-        site = _vault_text(data, "site", _MAX_VAULT_SITE_CHARS, required=True)
+        kind = _vault_text(data, "kind", 16, required=False) or "login"
+        metadata = {key: _vault_text(data, key, 16, required=False)
+                    for key in ("kind", "group") if key in data}
+        site = _vault_text(data, "site", _MAX_VAULT_SITE_CHARS, required=kind == "login") or ""
         username = _vault_text(
-            data, "username", _MAX_VAULT_USERNAME_CHARS, required=True
-        )
+            data, "username", _MAX_VAULT_USERNAME_CHARS, required=kind == "login"
+        ) or ""
         password = _vault_text(
-            data, "password", _MAX_VAULT_PASSWORD_CHARS, required=True
+            data, "password", _MAX_VAULT_NOTE_CHARS if kind == "secure_note" else _MAX_VAULT_PASSWORD_CHARS, required=True
         )
         label = _vault_text(data, "label", _MAX_VAULT_LABEL_CHARS, required=False) or ""
         try:
             await _vault_call(
-                lambda vault: vault.add_entry(site, username, password, label),
+                lambda vault: vault.add_entry(site, username, password, label, **metadata),
                 secrets=(password,),
             )
         finally:
@@ -1662,12 +1670,14 @@ class MiniBrowserWS:
 
     async def _handle_vault_update(self, ws: Any, data: Dict[str, Any]) -> None:
         entry_id = _short_id(data.get("id"), "id", required=True)
+        metadata = {key: _vault_text(data, key, 16, required=False)
+                    for key in ("kind", "group") if key in data}
         site = _vault_text(data, "site", _MAX_VAULT_SITE_CHARS, required=False)
         username = _vault_text(
             data, "username", _MAX_VAULT_USERNAME_CHARS, required=False
         )
         password = _vault_text(
-            data, "password", _MAX_VAULT_PASSWORD_CHARS, required=False
+            data, "password", _MAX_VAULT_NOTE_CHARS if data.get("kind") == "secure_note" else _MAX_VAULT_PASSWORD_CHARS, required=False
         )
         label = _vault_text(data, "label", _MAX_VAULT_LABEL_CHARS, required=False)
         try:
@@ -1678,12 +1688,26 @@ class MiniBrowserWS:
                     username=username,
                     password=password or None,  # empty = keep the saved one
                     label=label,
+                    **metadata,
                 ),
                 secrets=(password,) if password else (),
             )
         finally:
             _notify_vault_changed()
         self._send(ws, "mini_browser_vault_result", {"op": "update", "ok": True})
+
+    async def _handle_vault_reveal(self, ws: Any, data: Dict[str, Any]) -> None:
+        entry_id = _short_id(data.get("id"), "id", required=True)
+        token = _short_id(data.get("token"), "token", required=True)
+        secret = await _vault_call(lambda vault: vault.reveal_entry(entry_id))
+        try:
+            # Explicit user request only: no broadcast, resource cache or logs.
+            self._adapter._send_only_to(ws, {
+                "type": "mini_browser_vault_value",
+                "data": {"id": entry_id, "token": token, "value": secret.reveal()},
+            })
+        except Exception:
+            logger.warning("[MINI_BROWSER] Could not deliver the requested credential value")
 
     async def _handle_vault_delete(self, ws: Any, data: Dict[str, Any]) -> None:
         entry_id = _short_id(data.get("id"), "id", required=True)

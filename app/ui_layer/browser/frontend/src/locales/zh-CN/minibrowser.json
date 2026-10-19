@@ -265,5 +265,56 @@
       "title": "出了点问题",
       "message": "迷你浏览器遇到了意外问题。"
     }
+  },
+  "credentials": {
+    "title": "凭据",
+    "intro": "集中管理登录、API 密钥和私人笔记。",
+    "search": "搜索凭据",
+    "add": "添加凭据",
+    "save": "保存凭据",
+    "editTitle": "编辑凭据",
+    "type": "类型",
+    "group": "分组",
+    "all": "所有项目",
+    "allGroups": "所有分组",
+    "list": "已保存的凭据",
+    "kinds": {
+      "login": "登录",
+      "api_key": "API 密钥",
+      "secure_note": "安全笔记"
+    },
+    "groups": {
+      "work": "工作",
+      "personal": "个人",
+      "other": "其他"
+    },
+    "name": "名称",
+    "optionalName": "名称（可选）",
+    "optionalWebsite": "网站（可选）",
+    "apiKey": "API 密钥",
+    "note": "笔记",
+    "keepValue": "留空以保留已保存的值",
+    "loading": "正在加载凭据…",
+    "empty": "从这里开始使用保险库",
+    "emptyHint": "添加登录、API 密钥或安全笔记。",
+    "noMatches": "没有匹配的凭据",
+    "searchHint": "尝试其他搜索词或更改筛选条件。",
+    "clearFilters": "清除筛选条件",
+    "saved": "凭据已保存",
+    "updated": "凭据已更新",
+    "deleted": "凭据已删除",
+    "view": "查看值",
+    "viewNamed": "查看 {{name}}",
+    "editNamed": "编辑 {{name}}",
+    "deleteNamed": "删除 {{name}}",
+    "deleteTitle": "删除此凭据？",
+    "deleteMessage": "删除“{{name}}”？这会从保险库移除已保存的凭据。",
+    "reveal": "显示值",
+    "hide": "隐藏值",
+    "copy": "复制值",
+    "copied": "已复制到剪贴板",
+    "copyFailed": "无法复制。请选择并手动复制值。",
+    "revealHint": "在您选择显示前保持隐藏。30 秒后或离开此窗口时会再次隐藏。",
+    "revealFailed": "无法加载值。请检查连接并重试。"
   }
 }

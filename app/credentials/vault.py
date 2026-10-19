@@ -1,11 +1,14 @@
-"""Shared encrypted login credential vault.
+"""Shared encrypted credential vault: logins, API keys and secure notes.
 
 The Mini Browser saves website logins here and signs in with them through
 ``login.autofill``. Other app components can use the same vault. Passwords never
 travel back to the UI or to the model: :meth:`CredentialVault.list_entries` and
-:meth:`CredentialVault.status` carry no passwords. The only way out is
-:meth:`CredentialVault.candidates_for_url`, which the autofill code uses to
-type a password into the page whose URL it was matched against.
+:meth:`CredentialVault.status` carry metadata only. Login passwords leave only
+through :meth:`CredentialVault.candidates_for_url` for origin-matched autofill.
+API keys and notes can be explicitly revealed to the requesting UI through
+:meth:`CredentialVault.reveal_entry`; they are never browser autofill candidates.
+Legacy entries without a kind/group remain logins in the Other group. New
+metadata is stored in the same encrypted document, without relocating the vault.
 
 Storage
 -------
@@ -113,6 +116,9 @@ PROTECTION_FILE = "file"
 
 MAX_USERNAME_CHARS = 256
 MAX_PASSWORD_CHARS = 1024
+MAX_NOTE_CHARS = 16384
+CREDENTIAL_KINDS = frozenset({"login", "api_key", "secure_note"})
+CREDENTIAL_GROUPS = frozenset({"work", "personal", "other"})
 MAX_LABEL_CHARS = 100
 MAX_SITE_INPUT_CHARS = 2048
 MAX_URL_CHARS = 2 * 1024 * 1024  # Chromium's own URL length limit
@@ -607,6 +613,8 @@ class CredentialVault:
                 return []
             found = []
             for entry in state.entries:
+                if entry.get("kind", "login") != "login":
+                    continue
                 saved = _saved_parts(entry["site"])
                 if saved is not None and _matches(saved, target):
                     found.append(_Entry(entry))
@@ -617,18 +625,26 @@ class CredentialVault:
     # ── writes (raise VaultError) ──────────────────────────────────────
 
     def add_entry(
-        self, site: str, username: str, password: Any, label: str = ""
+        self,
+        site: str,
+        username: str,
+        password: Any,
+        label: str = "",
+        *,
+        kind: str = "login",
+        group: Optional[str] = None,
     ) -> Dict[str, Any]:
-        """Save a login; upserts on (normalised site, username ignoring case).
+        """Save a credential. Logins upsert on (normalised site, username).
 
         On an upsert the password and the username's spelling are replaced
         and the label is replaced only when a non-empty one is given.
         ``password`` may be a ``str`` or a :class:`Secret`.
+        API keys and notes are distinct items, even with identical metadata.
         """
         password = Secret.wrap(password)
-        new = _new_fields(site, username, password, label)
+        new = _new_fields(site, username, password, label, kind=kind, group=group)
         result = self._mutate(functools.partial(_upsert, new))
-        logger.info(f"{_LOG} Saved a login for {result['site']} ({result['id']})")
+        logger.info(f"{_LOG} Saved credential {result['id']}")
         return result
 
     def update_entry(
@@ -639,20 +655,41 @@ class CredentialVault:
         username: Optional[str] = None,
         password: Any = None,
         label: Optional[str] = None,
+        kind: Optional[str] = None,
+        group: Optional[str] = None,
     ) -> Dict[str, Any]:
-        """Change some fields of a login. ``None`` keeps a field; an empty
-        password also keeps the current one. ``label=""`` clears the label."""
+        """Change credential fields, retaining an omitted or empty secret.
+
+        The type is immutable; non-login items require a non-empty name.
+        """
         password = None if password is None else Secret.wrap(password)
-        changes = _changed_fields(site, username, password, label)
         target = _clean_id(entry_id)
         result, changed = self._mutate(
-            functools.partial(_apply_update, target, changes)
+            functools.partial(
+                _update_fields, target, site, username, password, label, kind, group
+            )
         )
         if changed:
             logger.info(
                 f"{_LOG} Updated the login for {result['site']} ({result['id']})"
             )
         return result
+
+    def reveal_entry(self, entry_id: str) -> Secret:
+        """Explicit user reveal for API keys/notes only; never a login password."""
+        target = _clean_id(entry_id)
+        with self._lock:
+            state = self._load_locked()
+            if state.unreadable:
+                raise VaultError(CODE_UNREADABLE)
+            if not state.ok:
+                raise VaultError(CODE_IO)
+            entry = next((e for e in state.entries if e["id"] == target), None)
+            if entry is None:
+                raise _invalid(_MSG_NOT_FOUND)
+            if entry.get("kind", "login") not in ("api_key", "secure_note"):
+                raise _invalid("Login passwords are available only to browser autofill.")
+            return Secret(entry["password"])
 
     def delete_entry(self, entry_id: str) -> bool:
         """Delete a login; False when no login has this id."""
@@ -900,48 +937,94 @@ def get_vault() -> CredentialVault:
 # ════════════════════════════════════════════════════════════════════════
 
 
-def _new_fields(site: Any, username: Any, password: Secret, label: Any) -> _Entry:
-    clean_site = normalize_site(site)
-    clean_username = _clean_username(username)
-    problem = _password_problem(password)
+def _clean_choice(value: Any, choices: frozenset[str], field: str) -> str:
+    if not isinstance(value, str) or value not in choices:
+        raise _invalid(f"Choose a valid credential {field}.")
+    return value
+
+
+def _new_fields(
+    site: Any, username: Any, password: Secret, label: Any,
+    *, kind: str = "login", group: Optional[str] = None,
+) -> _Entry:
+    kind = _clean_choice(kind, CREDENTIAL_KINDS, "type")
+    clean_site = normalize_site(site) if kind == "login" or site else ""
+    clean_username = _clean_username(username) if kind == "login" or username else ""
+    problem = _password_problem(password, kind)
     if problem:
         raise _invalid(problem)
     clean_label = _clean_label(label)
-    return _Entry(
+    if kind != "login" and not clean_label:
+        raise _invalid("Enter a name for this credential.")
+    entry = _Entry(
         site=clean_site,
         username=clean_username,
         password=password.reveal(),
         label=clean_label,
     )
+    if kind != "login":
+        entry["kind"] = kind
+    if group is not None:
+        entry["group"] = _clean_choice(group, CREDENTIAL_GROUPS, "group")
+    return entry
 
 
 def _changed_fields(
-    site: Any, username: Any, password: Optional[Secret], label: Any
+    site: Any, username: Any, password: Optional[Secret], label: Any,
+    *, kind: str = "login", group: Optional[str] = None,
 ) -> _Entry:
     changes = _Entry()
     if site is not None:
-        changes["site"] = normalize_site(site)
+        changes["site"] = normalize_site(site) if kind == "login" or site else ""
     if username is not None:
-        changes["username"] = _clean_username(username)
+        changes["username"] = _clean_username(username) if kind == "login" or username else ""
     if password:  # None or "" keeps the current password
-        problem = _password_problem(password)
+        problem = _password_problem(password, kind)
         if problem:
             raise _invalid(problem)
         changes["password"] = password.reveal()
     if label is not None:
         changes["label"] = _clean_label(label)
+    if group is not None:
+        changes["group"] = _clean_choice(group, CREDENTIAL_GROUPS, "group")
     return changes
+
+
+def _update_fields(
+    entry_id: Optional[str],
+    site: Any,
+    username: Any,
+    password: Optional[Secret],
+    label: Any,
+    kind: Optional[str],
+    group: Optional[str],
+    entries: List[_Entry],
+) -> Tuple[Tuple[Dict[str, Any], bool], bool]:
+    entry = next((e for e in entries if e["id"] == entry_id), None)
+    if entry is None:
+        raise _invalid(_MSG_NOT_FOUND)
+    current_kind = entry.get("kind", "login")
+    if kind is not None and kind != current_kind:
+        raise _invalid("The credential type cannot be changed. Add a new item instead.")
+    changes = _changed_fields(site, username, password, label, kind=current_kind, group=group)
+    if current_kind != "login" and not changes.get("label", entry.get("label")):
+        raise _invalid("Enter a name for this credential.")
+    return _apply_update(entry_id, changes, entries)
 
 
 def _upsert(new: _Entry, entries: List[_Entry]) -> Tuple[Dict[str, Any], bool]:
     now = _now()
     key = (new["site"], new["username"].casefold())
     for entry in entries:
+        if new.get("kind", "login") != "login" or entry.get("kind", "login") != "login":
+            continue
         if (entry["site"], entry["username"].casefold()) == key:
             entry["username"] = new["username"]
             entry["password"] = new["password"]
             if new["label"]:
                 entry["label"] = new["label"]
+            if "group" in new:
+                entry["group"] = new["group"]
             entry["updatedAt"] = now
             return _public(entry), True
     if len(entries) >= MAX_ENTRIES:
@@ -957,6 +1040,9 @@ def _upsert(new: _Entry, entries: List[_Entry]) -> Tuple[Dict[str, Any], bool]:
         lastUsedAt=None,
     )
     entries.append(entry)
+    for field in ("kind", "group"):
+        if field in new:
+            entry[field] = new[field]
     return _public(entry), True
 
 
@@ -971,7 +1057,9 @@ def _apply_update(
     username = changes.get("username", entry["username"])
     key = (site, username.casefold())
     for other in entries:
-        if other is not entry and (other["site"], other["username"].casefold()) == key:
+        if (entry.get("kind", "login") == "login"
+                and other.get("kind", "login") == "login" and other is not entry
+                and (other["site"], other["username"].casefold()) == key):
             raise _invalid(_MSG_DUPLICATE)
     changed = False
     for name, value in changes.items():
@@ -1001,7 +1089,7 @@ def _touch(entry_id: str, entries: List[_Entry]) -> Tuple[None, bool]:
 
 def _public(entry: Dict[str, Any]) -> Dict[str, Any]:
     """The display form of an entry: never includes the password."""
-    return {
+    public = {
         "id": entry["id"],
         "site": entry["site"],
         "username": entry["username"],
@@ -1010,6 +1098,10 @@ def _public(entry: Dict[str, Any]) -> Dict[str, Any]:
         "updatedAt": entry.get("updatedAt") or None,
         "lastUsedAt": entry.get("lastUsedAt") or None,
     }
+    for field in ("kind", "group"):
+        if field in entry:
+            public[field] = entry[field]
+    return public
 
 
 def _clean_id(entry_id: Any) -> Optional[str]:
@@ -1029,11 +1121,17 @@ def _clean_username(value: Any) -> str:
     return text
 
 
-def _password_problem(secret: Secret) -> str:
+def _password_problem(secret: Secret, kind: str = "login") -> str:
     """Why the password is unusable ("" when fine). Never raises."""
     value = secret.reveal()
     if not isinstance(value, str) or not value:
         return _MSG_PASSWORD_EMPTY
+    if kind == "secure_note":
+        if len(value) > MAX_NOTE_CHARS:
+            return f"The note is too long (at most {MAX_NOTE_CHARS} characters)."
+        if any(ord(ch) < 32 and ch not in "\n\r\t" for ch in value):
+            return "The note contains unsupported control characters."
+        return ""
     if len(value) > MAX_PASSWORD_CHARS:
         return _MSG_PASSWORD_LONG
     if _BAD_CHARS_RE.search(value):
@@ -1110,8 +1208,14 @@ def _parse_document(plaintext: Secret) -> List[_Entry]:
         if not isinstance(raw, dict):
             raise _Unreadable(_PROBLEM_DAMAGED)
         entry = _Entry(raw)
+        kind = entry.get("kind", "login")
+        if not isinstance(kind, str) or kind not in CREDENTIAL_KINDS:
+            raise _Unreadable(_PROBLEM_DAMAGED)
+        if "group" in entry and (not isinstance(entry["group"], str) or entry["group"] not in CREDENTIAL_GROUPS):
+            raise _Unreadable(_PROBLEM_DAMAGED)
         for name in ("id", "site", "username", "password"):
-            if not isinstance(entry.get(name), str) or not entry[name]:
+            if (not isinstance(entry.get(name), str)
+                    or (not entry[name] and (kind == "login" or name in ("id", "password")))):
                 raise _Unreadable(_PROBLEM_DAMAGED)
         if not isinstance(entry.get("label"), str):
             entry["label"] = ""

@@ -265,5 +265,56 @@
       "title": "發生問題",
       "message": "迷你瀏覽器發生了非預期的問題。"
     }
+  },
+  "credentials": {
+    "title": "認證資料",
+    "intro": "集中管理登入、API 金鑰和私人筆記。",
+    "search": "搜尋認證資料",
+    "add": "新增認證資料",
+    "save": "儲存認證資料",
+    "editTitle": "編輯認證資料",
+    "type": "類型",
+    "group": "群組",
+    "all": "所有項目",
+    "allGroups": "所有群組",
+    "list": "已儲存的認證資料",
+    "kinds": {
+      "login": "登入",
+      "api_key": "API 金鑰",
+      "secure_note": "安全筆記"
+    },
+    "groups": {
+      "work": "工作",
+      "personal": "個人",
+      "other": "其他"
+    },
+    "name": "名稱",
+    "optionalName": "名稱（選填）",
+    "optionalWebsite": "網站（選填）",
+    "apiKey": "API 金鑰",
+    "note": "筆記",
+    "keepValue": "留空以保留已儲存的值",
+    "loading": "正在載入認證資料…",
+    "empty": "從這裡開始使用保管庫",
+    "emptyHint": "新增登入、API 金鑰或安全筆記。",
+    "noMatches": "沒有相符的認證資料",
+    "searchHint": "嘗試其他搜尋字詞或變更篩選條件。",
+    "clearFilters": "清除篩選條件",
+    "saved": "認證資料已儲存",
+    "updated": "認證資料已更新",
+    "deleted": "認證資料已刪除",
+    "view": "檢視值",
+    "viewNamed": "檢視 {{name}}",
+    "editNamed": "編輯 {{name}}",
+    "deleteNamed": "刪除 {{name}}",
+    "deleteTitle": "刪除此認證資料？",
+    "deleteMessage": "刪除「{{name}}」？這會從保管庫移除已儲存的認證資料。",
+    "reveal": "顯示值",
+    "hide": "隱藏值",
+    "copy": "複製值",
+    "copied": "已複製到剪貼簿",
+    "copyFailed": "無法複製。請選取並手動複製值。",
+    "revealHint": "在您選擇顯示前保持隱藏。30 秒後或離開此視窗時會再次隱藏。",
+    "revealFailed": "無法載入值。請檢查連線並再試一次。"
   }
 }
