@@ -7,6 +7,8 @@ travel back to the UI or to the model: :meth:`CredentialVault.list_entries` and
 through :meth:`CredentialVault.candidates_for_url` for origin-matched autofill.
 API keys and notes can be explicitly revealed to the requesting UI through
 :meth:`CredentialVault.reveal_entry`; they are never browser autofill candidates.
+Agent HTTP requests resolve API keys through :meth:`CredentialVault.api_key_for_url`
+and inject them inside the app, without returning their values to the model.
 Legacy entries without a kind/group remain logins in the Other group. New
 metadata is stored in the same encrypted document, without relocating the vault.
 
@@ -689,6 +691,37 @@ class CredentialVault:
                 raise _invalid(_MSG_NOT_FOUND)
             if entry.get("kind", "login") not in ("api_key", "secure_note"):
                 raise _invalid("Login passwords are available only to browser autofill.")
+            return Secret(entry["password"])
+
+    def api_key_for_url(self, entry_id: str, url: str) -> Secret:
+        """Resolve an API key for a request to its saved host and port only.
+
+        Unlike browser logins, API requests do not allow a www alias. Plain
+        HTTP is allowed only on loopback, for local services. Callers must
+        validate the final prepared URL and must not follow redirects.
+        """
+        target = _parse_url(url)
+        if target is None:
+            raise _invalid("Enter a valid API request URL.")
+        scheme, host, _ = target
+        if scheme != "https" and host not in LOOPBACK_HOSTS:
+            raise _invalid("API keys require HTTPS outside localhost.")
+        target_port = urlsplit(url).port or (443 if scheme == "https" else 80)
+        target_id = _clean_id(entry_id)
+        with self._lock:
+            state = self._load_locked()
+            if state.unreadable:
+                raise VaultError(CODE_UNREADABLE)
+            if not state.ok:
+                raise VaultError(CODE_IO)
+            entry = next((e for e in state.entries if e["id"] == target_id), None)
+            if entry is None or entry.get("kind") != "api_key":
+                raise _invalid("Choose a saved API key.")
+            saved = _saved_parts(entry["site"])
+            if saved is None:
+                raise _invalid("Add a website to this API key in Settings > Credentials first.")
+            if host != saved[0] or target_port != (saved[1] or (443 if scheme == "https" else 80)):
+                raise _invalid("The request must match the API key's saved website and port.")
             return Secret(entry["password"])
 
     def delete_entry(self, entry_id: str) -> bool:

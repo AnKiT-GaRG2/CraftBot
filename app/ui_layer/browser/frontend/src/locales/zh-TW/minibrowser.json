@@ -291,6 +291,7 @@
     "name": "名稱",
     "optionalName": "名稱（選填）",
     "optionalWebsite": "網站（選填）",
+    "apiWebsiteHint": "設定 API 主機（例如 api.example.com），讓代理無需查看金鑰即可使用。請求必須與此主機及連接埠完全相符，並使用 HTTPS（localhost 也可使用 HTTP）。重新導向會被封鎖。",
     "apiKey": "API 金鑰",
     "note": "筆記",
     "keepValue": "留空以保留已儲存的值",

@@ -292,6 +292,7 @@
     "name": "Nombre",
     "optionalName": "Nombre (opcional)",
     "optionalWebsite": "Sitio web (opcional)",
+    "apiWebsiteHint": "Indica el host de la API (por ejemplo, api.example.com) para que los agentes usen esta clave sin verla. Las solicitudes deben coincidir exactamente con el host y el puerto y usar HTTPS (o HTTP en localhost). Las redirecciones se bloquean.",
     "apiKey": "Clave API",
     "note": "Nota",
     "keepValue": "Dejar en blanco para conservar el valor guardado",

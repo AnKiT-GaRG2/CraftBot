@@ -291,6 +291,7 @@
     "name": "名前",
     "optionalName": "名前（任意）",
     "optionalWebsite": "ウェブサイト（任意）",
+    "apiWebsiteHint": "API ホスト（例: api.example.com）を設定すると、エージェントがキーを見ずに使用できます。リクエストのホストとポートは完全一致が必要で、HTTPS（localhost のみ HTTP 可）を使用します。リダイレクトは拒否されます。",
     "apiKey": "API キー",
     "note": "メモ",
     "keepValue": "空欄のままで保存済みの値を維持",

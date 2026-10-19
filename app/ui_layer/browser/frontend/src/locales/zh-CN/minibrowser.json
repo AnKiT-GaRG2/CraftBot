@@ -291,6 +291,7 @@
     "name": "名称",
     "optionalName": "名称（可选）",
     "optionalWebsite": "网站（可选）",
+    "apiWebsiteHint": "设置 API 主机（例如 api.example.com），让智能体无需查看密钥即可使用。请求必须与此主机和端口完全匹配，并使用 HTTPS（localhost 也可使用 HTTP）。重定向会被阻止。",
     "apiKey": "API 密钥",
     "note": "笔记",
     "keepValue": "留空以保留已保存的值",

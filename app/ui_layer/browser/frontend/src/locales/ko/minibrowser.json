@@ -291,6 +291,7 @@
     "name": "이름",
     "optionalName": "이름 (선택 사항)",
     "optionalWebsite": "웹사이트 (선택 사항)",
+    "apiWebsiteHint": "API 호스트(예: api.example.com)를 설정하면 에이전트가 키를 보지 않고 사용할 수 있습니다. 요청은 호스트 및 포트와 정확히 일치해야 하며 HTTPS(localhost는 HTTP도 허용)를 사용해야 합니다. 리디렉션은 차단됩니다.",
     "apiKey": "API 키",
     "note": "메모",
     "keepValue": "저장된 값을 유지하려면 비워 두세요",

@@ -459,9 +459,9 @@ export function PasswordsPanel({ isOpen = true, onClose }: PasswordsPanelProps) 
               <label htmlFor={fieldId('site')}>{t(isLogin ? 'minibrowser:passwords.site' : 'minibrowser:credentials.optionalWebsite')}</label>
               <input ref={isLogin ? siteRef : undefined} id={fieldId('site')} value={site} onChange={e => setSite(e.target.value)} disabled={busy}
                 inputMode="url" autoCapitalize="off" autoCorrect="off" spellCheck={false} placeholder="example.com"
-                aria-invalid={showErrors && !!siteMessage} aria-describedby={showErrors && siteMessage ? fieldId('site-error') : isLogin ? fieldId('site-hint') : undefined} {...NO_AUTOFILL} />
+                aria-invalid={showErrors && !!siteMessage} aria-describedby={showErrors && siteMessage ? fieldId('site-error') : fieldId('site-hint')} {...NO_AUTOFILL} />
               {showErrors && siteMessage ? <span id={fieldId('site-error')} className={styles.fieldError}>{siteMessage}</span>
-                : isLogin && <span id={fieldId('site-hint')} className={styles.fieldHint}>{t('minibrowser:passwords.siteHint')}</span>}
+                : <span id={fieldId('site-hint')} className={styles.fieldHint}>{t(isLogin ? 'minibrowser:passwords.siteHint' : 'minibrowser:credentials.apiWebsiteHint')}</span>}
             </div>}
             {isLogin && <div className={styles.field}>
               <label htmlFor={fieldId('username')}>{t('minibrowser:passwords.username')}</label>

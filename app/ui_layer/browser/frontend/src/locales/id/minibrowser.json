@@ -291,6 +291,7 @@
     "name": "Nama",
     "optionalName": "Nama (opsional)",
     "optionalWebsite": "Situs web (opsional)",
+    "apiWebsiteHint": "Isi host API (misalnya api.example.com) agar agen dapat memakai kunci ini tanpa melihatnya. Permintaan harus cocok persis dengan host dan port ini, melalui HTTPS (atau HTTP di localhost). Pengalihan diblokir.",
     "apiKey": "Kunci API",
     "note": "Catatan",
     "keepValue": "Kosongkan untuk mempertahankan nilai tersimpan",

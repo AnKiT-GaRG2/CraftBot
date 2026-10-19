@@ -292,6 +292,7 @@
     "name": "Name",
     "optionalName": "Name (optional)",
     "optionalWebsite": "Website (optional)",
+    "apiWebsiteHint": "Set the API host (for example api.example.com) to let agents use this key without seeing it. Requests must match this host and port exactly, over HTTPS (or HTTP on localhost). Redirects are blocked.",
     "apiKey": "API key",
     "note": "Note",
     "keepValue": "Leave blank to keep the saved value",
