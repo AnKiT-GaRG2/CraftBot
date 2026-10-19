@@ -20,7 +20,6 @@ import { MCPSettings } from './MCPSettings'
 import { SkillsSettings } from './SkillsSettings'
 import { IntegrationsSettings } from './IntegrationsSettings'
 import { AgentAppSettings } from './AgentAppSettings'
-import { CredentialsSettings } from './CredentialsSettings'
 
 export function SettingsPage() {
   const { t } = useTranslation(['settings', 'common'])
@@ -60,8 +59,6 @@ export function SettingsPage() {
         return <IntegrationsSettings />
       case 'agent_app':
         return <AgentAppSettings />
-      case 'credentials':
-        return <CredentialsSettings />
       default:
         return null
     }
@@ -83,7 +80,7 @@ export function SettingsPage() {
                 {...(tourAnchor ? tourAnchorProps(tourAnchor) : {})}
               >
                 <span className={styles.categoryIcon}>{cat.icon}</span>
-                <span className={styles.categoryLabel}>{t(`settings:nav.${cat.id}`, { defaultValue: cat.id === 'credentials' ? 'Credentials' : cat.id })}</span>
+                <span className={styles.categoryLabel}>{t(`settings:nav.${cat.id}`)}</span>
               </button>
             )
           })}

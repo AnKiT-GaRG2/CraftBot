@@ -24,7 +24,7 @@ Layout
 - ``observe.py``     page snapshot JS + compact observations for the LLM.
 - ``human.py``       human-like mouse paths, typing rhythm and scrolling.
 - ``login.py``       password-vault autofill (origin-checked, never leaks).
-- ``vault.py``       encrypted credential vault (shared by every session).
+- ``vault.py``       compatibility import for ``app.credentials.vault``.
 - ``actions_api.py`` validation + entry point used by the action stubs.
 - ``ws.py``          WebSocket protocol handler living in the UI adapter.
 - ``bridge.py``      thread-safe channel from the browser thread to the UI.

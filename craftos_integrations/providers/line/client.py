@@ -29,7 +29,6 @@ from ... import (
     load_credential,
     register_client,
 )
-from ...helpers.http import raw_request, raw_stream
 from ...helpers import Result, request as http_request
 from ...logger import get_logger
 
@@ -420,7 +419,7 @@ class LineClient(BasePlatformClient):
         import httpx
 
         try:
-            with raw_stream(
+            with httpx.stream(
                 "GET",
                 f"{LINE_DATA_API_BASE}/message/{message_id}/content",
                 headers={
@@ -594,8 +593,7 @@ class LineClient(BasePlatformClient):
         try:
             with open(file_path, "rb") as f:
                 data = f.read()
-            r = raw_request(
-                "POST",
+            r = httpx.post(
                 f"{LINE_DATA_API_BASE}/richmenu/{rich_menu_id}/content",
                 headers={
                     "Authorization": f"Bearer {self._load().channel_access_token}",

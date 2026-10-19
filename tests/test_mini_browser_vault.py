@@ -1,4 +1,4 @@
-"""Tests for the Mini Browser password vault (app/mini_browser/vault.py).
+"""Tests for the shared login vault (app/credentials/vault.py).
 
 No network and no Chromium: every vault lives in a pytest temp directory.
 """
@@ -17,10 +17,8 @@ from pathlib import Path
 
 import pytest
 
-from app.logger import logger
-from app.mini_browser import vault as vault_mod
-from app.mini_browser.errors import MiniBrowserError, ui_error
-from app.mini_browser.vault import (
+from app.credentials import vault as vault_mod
+from app.credentials.vault import (
     CODE_INVALID,
     CODE_IO,
     CODE_UNREADABLE,
@@ -31,6 +29,8 @@ from app.mini_browser.vault import (
     normalize_site,
     site_matches,
 )
+from app.logger import logger
+from app.mini_browser.errors import ui_error
 
 # Distinctive values, so a leak is easy to spot anywhere.
 PASSWORD = "Tr0ub4dor&3-horse-battery"
@@ -909,9 +909,69 @@ def test_get_vault_is_a_lazy_singleton_in_project_credentials():
     assert vault.key_path.name == "mini_browser_vault.key"
 
 
-def test_vault_error_is_a_mini_browser_error():
+def test_browser_compatibility_import_shares_singleton_and_locks(tmp_path):
+    from app.mini_browser import vault as browser_vault
+    from app.mini_browser.core import BrowserCore
+    from app.mini_browser.ws import _get_vault
+
+    assert browser_vault is vault_mod
+    assert browser_vault.get_vault() is get_vault()
+    assert BrowserCore.vault(None) is get_vault()
+    assert _get_vault() is get_vault()
+    assert browser_vault.Secret is Secret
+    assert browser_vault.VaultError is VaultError
+    assert browser_vault.CredentialVault(tmp_path)._lock is CredentialVault(tmp_path)._lock
+    assert list(tmp_path.iterdir()) == []
+
+
+def test_existing_credentials_work_without_migration(vault_dir):
+    from cryptography.fernet import Fernet
+
+    # Write the pre-extraction format independently of the current vault writer.
+    key = base64.urlsafe_b64encode(b"a" * 32)
+    key_file = b"raw:" + key
+    document = {
+        "version": 1,
+        "entries": [
+            {
+                "id": "saved-login-id",
+                "site": "example.com",
+                "username": "alice",
+                "password": PASSWORD,
+                "label": "Existing login",
+                "createdAt": "2026-10-09T03:04:05.678+00:00",
+                "updatedAt": "2026-10-09T03:04:05.678+00:00",
+                "lastUsedAt": None,
+                "futureField": {"keep": True},
+            }
+        ],
+    }
+    encrypted = Fernet(key).encrypt(json.dumps(document).encode("utf-8"))
+    vault_dir.mkdir()
+    (vault_dir / "mini_browser_vault.key").write_bytes(key_file)
+    (vault_dir / "mini_browser_vault.enc").write_bytes(encrypted)
+
+    shared = CredentialVault(vault_dir)
+    assert shared.list_entries()[0]["id"] == "saved-login-id"
+    assert shared.candidates_for_url("https://example.com/login")[0]["password"] == PASSWORD
+    assert shared.vault_path.read_bytes() == encrypted
+    assert shared.key_path.read_bytes() == key_file
+    assert not shared.previous_path.exists()
+
+    shared.update_entry("saved-login-id", password=NEW_PASSWORD)
+    from app.mini_browser.vault import CredentialVault as BrowserVault
+
+    browser = BrowserVault(vault_dir)
+    saved = browser.candidates_for_url("https://example.com/login")[0]
+    assert saved["id"] == "saved-login-id"
+    assert saved["password"] == NEW_PASSWORD
+    assert saved["futureField"] == {"keep": True}
+    assert browser.key_path.read_bytes() == key_file
+    assert browser.previous_path.read_bytes() == encrypted
+
+
+def test_vault_error_preserves_browser_error_rendering():
     error = VaultError(CODE_INVALID, detail="Enter the password for this login.")
-    assert isinstance(error, MiniBrowserError)
     assert error.code == CODE_INVALID
     assert error.detail == "Enter the password for this login."
     rendered = ui_error(error.code, **error.fields)

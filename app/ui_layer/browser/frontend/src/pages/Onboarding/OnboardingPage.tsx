@@ -12,8 +12,7 @@ import {
   WifiOff,
   RefreshCw,
 } from 'lucide-react'
-import { Button, Modal, ModalBody } from '../../components/ui'
-import { CredentialsSettings } from '../Settings/CredentialsSettings'
+import { Button } from '../../components/ui'
 import { useTranslation, Trans } from 'react-i18next'
 import { useWebSocket } from '../../contexts/WebSocketContext'
 import { useAppDispatch, useAppSelector } from '../../store/hooks'
@@ -505,7 +504,6 @@ export function OnboardingPage() {
   // Local form state
   const [selectedValue, setSelectedValue] = useState<string>('')
   const [textValue, setTextValue] = useState('')
-  const [credentialsOpen, setCredentialsOpen] = useState(false)
   const [orModel, setOrModel] = useState('')
   // For proxied providers: 'direct' tries the native API, 'openrouter' routes via OR.
   const [proxiedVia, setProxiedVia] = useState<'direct' | 'openrouter'>('direct')
@@ -778,16 +776,15 @@ export function OnboardingPage() {
       return (
         <div className={styles.formGroup}>
           <input
-            type="text"
+            type="password"
             className={`${styles.textInput} ${onboardingError ? styles.error : ''}`}
             value={textValue}
             onChange={e => setTextValue(e.target.value)}
-            placeholder="Saved credential reference from Credentials"
+            placeholder={isViaOR ? t('onboarding:proxied.orKey') : t('onboarding:proxied.directKey', { provider: providerDisplay })}
             autoFocus
             onKeyDown={e => { if (e.key === 'Enter' && canSubmit) handleSubmit() }}
           />
-          <div className={styles.inputHint}>Enter source values in the protected dialog, then select their reference here.</div>
-          <Button variant="secondary" onClick={() => setCredentialsOpen(true)}>Open Credentials</Button>
+          <div className={styles.inputHint}>{t('onboarding:apiKey.storedLocally')}</div>
           {isViaOR && (
             <div style={{ marginTop: 14 }}>
               <label style={{ display: 'block', fontSize: '0.85rem', fontWeight: 500, marginBottom: 6 }}>
@@ -835,16 +832,16 @@ export function OnboardingPage() {
     const keyInputBlock = (
       <>
         <input
-          type="text"
+          type={isApiKey ? 'password' : 'text'}
           className={`${styles.textInput} ${onboardingError ? styles.error : ''}`}
           value={textValue}
           onChange={e => setTextValue(e.target.value)}
-          placeholder={isApiKey ? 'Saved credential reference from Credentials' : t('onboarding:form.enterName')}
+          placeholder={isApiKey ? (isSubConnected ? t('onboarding:apiKey.optional') : t('onboarding:apiKey.enter')) : t('onboarding:form.enterName')}
           autoFocus={!supportsSub}
           onKeyDown={e => { if (e.key === 'Enter' && canSubmit) handleSubmit() }}
         />
         {isApiKey && (
-          <div className={styles.inputHint}>Source values stay in the protected vault. <Button variant="secondary" onClick={() => setCredentialsOpen(true)}>Open Credentials</Button></div>
+          <div className={styles.inputHint}>{t('onboarding:apiKey.storedLocally')}</div>
         )}
       </>
     )
@@ -1064,8 +1061,8 @@ export function OnboardingPage() {
                     if (onboardingStep.name === 'api_key') {
                       const name = PROVIDER_NAMES[apiKeyProvider] ?? t('onboarding:apiKeyPrompt.providerFallback')
                       return supportsSub
-                        ? `Sign in to ${name}, or choose a saved credential reference.`
-                        : `Choose a saved credential reference for ${name}.`
+                        ? t('onboarding:apiKeyPrompt.withSub', { provider: name })
+                        : t('onboarding:apiKeyPrompt.plain', { provider: name })
                     }
                     if (onboardingStep.name === 'provider') return t('onboarding:stepPrompt.provider')
                     if (onboardingStep.name === 'user_profile') return t('onboarding:stepPrompt.userProfile')
@@ -1135,7 +1132,6 @@ export function OnboardingPage() {
             </div>
           )}
         </div>
-      {credentialsOpen && <Modal isOpen onClose={() => setCredentialsOpen(false)} title="Credentials" size="lg"><ModalBody><CredentialsSettings /></ModalBody></Modal>}
       </div>
   )
 }

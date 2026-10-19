@@ -15,7 +15,6 @@ from ... import (
     load_credential,
     register_client,
 )
-from ...helpers.http import raw_request
 from ...helpers import request as http_request
 from ...logger import get_logger
 
@@ -396,6 +395,7 @@ class NotionClient(BasePlatformClient):
         Uses multipart/form-data — bypasses the JSON helper.
         """
         import os
+        import httpx
 
         file_path = os.path.abspath(file_path)
         if not os.path.isfile(file_path):
@@ -412,8 +412,7 @@ class NotionClient(BasePlatformClient):
                 data: Dict[str, Any] = {}
                 if part_number is not None:
                     data["part_number"] = str(part_number)
-                r = raw_request(
-                    "POST",
+                r = httpx.post(
                     f"{NOTION_API_BASE}/file_uploads/{file_upload_id}/send",
                     headers=headers,
                     files=files,

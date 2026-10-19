@@ -63,7 +63,6 @@ _TYPE_LANES = {
 
 # Message-type prefix → lane; first match wins.
 _PREFIX_LANES = (
-    ("credentials_", "credentials"),
     ("agent_app_", "agent_app"),
     ("file_", "workspace"),
     ("memory_", "memory"),

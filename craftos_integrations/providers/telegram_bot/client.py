@@ -21,7 +21,6 @@ from ... import (
     save_credential,
 )
 from ...config import ConfigStore
-from ...helpers.http import raw_request
 from ...helpers import arequest, request as http_request
 from ...logger import get_logger
 
@@ -266,8 +265,7 @@ class TelegramBotClient(BasePlatformClient):
     def _poll_updates_sync(self) -> Dict[str, Any]:
         """Sync long-poll - runs in a worker thread to bypass anyio."""
         try:
-            resp = raw_request(
-                "GET",
+            resp = httpx.get(
                 self._api_url("getUpdates"),
                 params={
                     "offset": self._poll_offset,

@@ -185,12 +185,12 @@ class OnboardingFlowController:
         Returns:
             True if there are more steps, False if onboarding is complete
         """
-        next_index = self._state.current_step + 1
-        if next_index >= len(self.STEP_CLASSES):
+        self._state.current_step += 1
+
+        if self._state.current_step >= len(self.STEP_CLASSES):
             self._complete()
-            self._state.current_step = next_index
             return False
-        self._state.current_step = next_index
+
         return True
 
     def previous_step(self) -> bool:
@@ -239,6 +239,7 @@ class OnboardingFlowController:
 
     def _complete(self) -> None:
         """Complete the onboarding flow."""
+        self._state.completed = True
 
         # Extract collected data
         data = self._state.collected_data
@@ -255,7 +256,6 @@ class OnboardingFlowController:
             provider, api_key, proxied_via, submitted_or_model
         )
         self._activate_provider(provider)
-        self._state.completed = True
 
         # Update controller state if available
         if self._controller:
@@ -354,21 +354,18 @@ class OnboardingFlowController:
         if provider in ApiKeyStep.OPENROUTER_PROXIED and api_key:
             if proxied_via != "openrouter":
                 # Direct access: save the key under the native provider.
-                if not save_settings_to_json(provider, api_key):
-                    raise RuntimeError("Could not save the credential reference.")
+                save_settings_to_json(provider, api_key)
                 return provider
             # Routed via OpenRouter: save the key as openrouter + set the slug.
             or_model = submitted_or_model or self._default_openrouter_model(provider)
-            if not save_settings_to_json("openrouter", api_key):
-                raise RuntimeError("Could not save the credential reference.")
+            save_settings_to_json("openrouter", api_key)
             from app.ui_layer.settings.model_settings import update_model_settings
 
             update_model_settings(llm_model=or_model, vlm_model=or_model)
             return "openrouter"
 
         if provider and api_key:
-            if not save_settings_to_json(provider, api_key):
-                raise RuntimeError("Could not save the credential reference.")
+            save_settings_to_json(provider, api_key)
         elif provider and self._subscription_connected(provider):
             # Subscription OAuth (ChatGPT Plus/Pro, SuperGrok) authorizes this
             # provider without an API key. Persist the provider selection so it

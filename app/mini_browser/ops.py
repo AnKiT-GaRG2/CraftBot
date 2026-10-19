@@ -2809,27 +2809,12 @@ async def screenshot(core: Any, tab: Any, *, full_page: bool = False) -> Dict[st
 
 
 async def login(
-    core: Any,
-    tab: Any,
-    *,
-    username: Optional[str] = None,
-    submit: bool = True,
-    credential_reference: Optional[str] = None,
-    helper: Optional[str] = None,
-    operation: str = "login",
+    core: Any, tab: Any, *, username: Optional[str] = None, submit: bool = True
 ) -> Dict[str, Any]:
     """Sign in with a saved login from the password vault."""
     from app.mini_browser.login import autofill
 
-    return await autofill(
-        core,
-        tab,
-        username=username,
-        submit=submit,
-        credential_reference=credential_reference,
-        helper=helper,
-        operation=operation,
-    )
+    return await autofill(core, tab, username=username, submit=submit)
 
 
 _CLOSED_CODES = frozenset(

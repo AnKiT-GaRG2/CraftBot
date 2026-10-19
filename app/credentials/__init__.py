@@ -1,5 +1,5 @@
-"""Host-owned credential contracts and storage; no consumer routes are enabled.
+"""Shared login credential storage used by the Mini Browser and app consumers."""
 
-These types are not an authentication or OS isolation mechanism. Only trusted
-host adapters may construct caller bindings from authenticated transport state.
-"""
+from .vault import CredentialVault, Secret, VaultError, get_vault
+
+__all__ = ["CredentialVault", "Secret", "VaultError", "get_vault"]

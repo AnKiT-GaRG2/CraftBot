@@ -18,7 +18,6 @@ from ... import (
     load_credential,
     register_client,
 )
-from ...helpers.http import raw_request
 from ...helpers import arequest, request as http_request
 from ...logger import get_logger
 from .formatting import to_plain_text
@@ -776,9 +775,10 @@ class SlackClient(BasePlatformClient):
         if not url:
             return {"error": "File has no downloadable URL", "details": meta}
 
+        import httpx
+
         try:
-            r = raw_request(
-                "GET",
+            r = httpx.get(
                 url,
                 headers=self._headers(),
                 follow_redirects=True,
@@ -862,6 +862,7 @@ class SlackClient(BasePlatformClient):
     ) -> Dict[str, Any]:
         """High-level: full 3-step modern upload of a local file in one call."""
         import os
+        import httpx
 
         file_path = os.path.abspath(file_path)
         if not os.path.isfile(file_path):
@@ -880,7 +881,7 @@ class SlackClient(BasePlatformClient):
 
         try:
             with open(file_path, "rb") as f:
-                r = raw_request("POST", upload_url, content=f.read(), timeout=300.0)
+                r = httpx.post(upload_url, content=f.read(), timeout=300.0)
             if r.status_code != 200:
                 return {
                     "error": f"Upload to signed URL failed: {r.status_code}",
