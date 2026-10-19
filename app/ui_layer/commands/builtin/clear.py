@@ -1,4 +1,4 @@
-"""Clear command implementation — clears the current session's conversation."""
+"""Clear command implementation: starts the current session over."""
 
 from __future__ import annotations
 
@@ -10,7 +10,8 @@ from app.ui_layer.commands.base import Command, CommandResult
 
 
 class ClearCommand(Command):
-    """Clear the current session's conversation."""
+    """Start the current session over: its conversation and the agent's
+    context of it are cleared, and it continues as a new session."""
 
     @property
     def name(self) -> str:
@@ -22,7 +23,7 @@ class ClearCommand(Command):
 
     @property
     def description(self) -> str:
-        return "Clear this session's conversation"
+        return "Clear this session's conversation and context (starts it over)"
 
     @property
     def requires_session(self) -> bool:
@@ -40,14 +41,16 @@ class ClearCommand(Command):
         """Execute the clear command for the session it was typed in."""
         target = session_id or MAIN_SESSION_ID
 
+        # Start the session over on the agent side (stops a run in flight,
+        # resets its context and files). First, so the stopped run's last
+        # rows are cleared with the rest of the conversation.
+        await self._controller.agent.clear_session(target)
+
         # Clear persisted chat + activity rows for this session
         from app.usage import get_action_storage, get_chat_storage
 
         get_chat_storage().clear_messages(target)
         get_action_storage().clear_items(target)
-
-        # Clear the agent-side session state (event stream, todos, budgets)
-        await self._controller.agent.clear_session(target)
 
         # Tell the UI to drop the session's rendered conversation. Always
         # session-scoped: a /clear must never touch other sessions.

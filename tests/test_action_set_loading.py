@@ -92,10 +92,9 @@ class _NoLLM:
 
 
 @pytest.fixture
-def loader(sessions, tmp_path, monkeypatch, event_stream_limits):
+def loader(sessions, tmp_path, monkeypatch):
     import app.internal_action_interface as iai
 
-    event_stream_limits(10000)
     stream = EventStream(llm=_NoLLM(), temp_dir=tmp_path / "events")
     monkeypatch.setattr(iai.InternalActionInterface, "session_manager", sessions)
     monkeypatch.setattr(

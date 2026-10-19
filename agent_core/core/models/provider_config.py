@@ -73,6 +73,14 @@ class ProviderProfile:
     # Frontend opts into the catalog-aware model picker (OpenRouter).
     supports_catalog_picker: bool = False
 
+    # ── model catalog (agent_core/core/models/catalog.py) ─────────────
+    # models.dev provider id whose rows scripts/gen_model_catalog.py copies
+    # into the model catalog for this provider (each model's context window
+    # and input limit). Must serve the same model ids at the same endpoint.
+    # None -> not catalogued, so settings.json model.context_window applies:
+    # local servers run whatever window the user loaded.
+    catalog_provider: Optional[str] = None
+
     # ── models ────────────────────────────────────────────────────────
     # {InterfaceType: default model id} (was MODEL_REGISTRY row).
     default_models: Mapping[InterfaceType, Optional[str]] = field(default_factory=dict)
@@ -94,6 +102,12 @@ class ProviderProfile:
     # providers that already receive it today (NFR-3: golden payloads
     # must not change).
     supports_prompt_cache_key: bool = False
+    # Whether responses report how many input tokens came from the provider's
+    # cache. False -> the cached count is always 0 whatever the provider did
+    # (Fireworks puts it in a header only; HF-router, hosted NVIDIA NIM,
+    # Ollama and the local OpenAI-compatible servers by default omit it), so
+    # a cache hit rate cannot be shown for it.
+    reports_cached_tokens: bool = True
     # Temperature policy for the chat_completions wire (Hermes-style):
     #   None            -> send the caller's temperature (default behavior)
     #   OMIT_TEMPERATURE -> do NOT send temperature (Kimi/Moonshot thinking
@@ -172,6 +186,7 @@ def resolve_temperature(profile: Optional[ProviderProfile], caller_temperature):
 PROVIDER_CONFIG: Dict[str, ProviderProfile] = {
     "openai": ProviderProfile(
         key="openai",
+        catalog_provider="openai",
         session_accumulation=True,
         api_key_env="OPENAI_API_KEY",
         display_name="OpenAI",
@@ -219,6 +234,7 @@ PROVIDER_CONFIG: Dict[str, ProviderProfile] = {
     ),
     "gemini": ProviderProfile(
         key="gemini",
+        catalog_provider="google",
         api_key_env="GOOGLE_API_KEY",
         display_name="Google Gemini",
         wire="gemini_native",
@@ -234,6 +250,7 @@ PROVIDER_CONFIG: Dict[str, ProviderProfile] = {
     ),
     "anthropic": ProviderProfile(
         key="anthropic",
+        catalog_provider="anthropic",
         api_key_env="ANTHROPIC_API_KEY",
         display_name="Anthropic",
         wire="anthropic_messages",
@@ -251,6 +268,8 @@ PROVIDER_CONFIG: Dict[str, ProviderProfile] = {
     ),
     "byteplus": ProviderProfile(
         key="byteplus",
+        # No catalog_provider: models.dev lists only the China Volcengine
+        # endpoint, whose doubao-* ids are not the international ids below.
         api_key_env="BYTEPLUS_API_KEY",
         base_url_env="BYTEPLUS_BASE_URL",
         default_base_url="https://ark.ap-southeast.bytepluses.com/api/v3",
@@ -272,6 +291,7 @@ PROVIDER_CONFIG: Dict[str, ProviderProfile] = {
     ),
     "remote": ProviderProfile(
         key="remote",
+        reports_cached_tokens=False,
         base_url_env="REMOTE_MODEL_URL",
         default_base_url="http://localhost:11434",
         display_name="Local (Ollama)",
@@ -288,6 +308,7 @@ PROVIDER_CONFIG: Dict[str, ProviderProfile] = {
     ),
     "minimax": ProviderProfile(
         key="minimax",
+        catalog_provider="minimax",
         api_key_env="MINIMAX_API_KEY",
         # International OpenAI-compatible endpoint (verified 2026-08-17:
         # platform.minimax.io). The old api.minimax.chat domain is RETIRED.
@@ -328,6 +349,7 @@ PROVIDER_CONFIG: Dict[str, ProviderProfile] = {
     ),
     "deepseek": ProviderProfile(
         key="deepseek",
+        catalog_provider="deepseek",
         session_accumulation=True,
         api_key_env="DEEPSEEK_API_KEY",
         default_base_url="https://api.deepseek.com",
@@ -346,6 +368,7 @@ PROVIDER_CONFIG: Dict[str, ProviderProfile] = {
     ),
     "moonshot": ProviderProfile(
         key="moonshot",
+        catalog_provider="moonshotai",
         api_key_env="MOONSHOT_API_KEY",
         # International endpoint (verified 2026-08-17: platform.kimi.ai).
         base_url_env="MOONSHOT_BASE_URL",
@@ -382,6 +405,7 @@ PROVIDER_CONFIG: Dict[str, ProviderProfile] = {
     ),
     "grok": ProviderProfile(
         key="grok",
+        catalog_provider="xai",
         session_accumulation=True,
         api_key_env="XAI_API_KEY",
         default_base_url="https://api.x.ai/v1",
@@ -404,6 +428,7 @@ PROVIDER_CONFIG: Dict[str, ProviderProfile] = {
     ),
     "glm": ProviderProfile(
         key="glm",
+        catalog_provider="zai",
         session_accumulation=True,
         # Z.ai (Zhipu AI) GLM models -- OpenAI-compatible API.
         api_key_env="ZAI_API_KEY",
@@ -424,6 +449,7 @@ PROVIDER_CONFIG: Dict[str, ProviderProfile] = {
     ),
     "fugu": ProviderProfile(
         key="fugu",
+        catalog_provider="sakana",
         session_accumulation=True,
         # Sakana AI Fugu -- OpenAI-compatible API.
         api_key_env="SAKANA_API_KEY",
@@ -444,6 +470,7 @@ PROVIDER_CONFIG: Dict[str, ProviderProfile] = {
     ),
     "openrouter": ProviderProfile(
         key="openrouter",
+        catalog_provider="openrouter",
         session_accumulation=True,
         api_key_env="OPENROUTER_API_KEY",
         base_url_env="OPENROUTER_BASE_URL",
@@ -466,6 +493,7 @@ PROVIDER_CONFIG: Dict[str, ProviderProfile] = {
     ),
     "bedrock": ProviderProfile(
         key="bedrock",
+        catalog_provider="amazon-bedrock",
         # Bedrock uses the boto3 credential chain (access_key / secret_key /
         # session_token) read from settings.json by the factory. There is no
         # single API key, so api_key_env stays None. base_url_env carries the
@@ -498,6 +526,7 @@ PROVIDER_CONFIG: Dict[str, ProviderProfile] = {
     # docs/PROVIDER_LAYER_CATCHUP.md section 8.3/8.4) ──────────────────
     "groq": ProviderProfile(
         key="groq",
+        catalog_provider="groq",
         session_accumulation=True,
         api_key_env="GROQ_API_KEY",
         base_url_env="GROQ_BASE_URL",
@@ -526,6 +555,7 @@ PROVIDER_CONFIG: Dict[str, ProviderProfile] = {
     ),
     "mistral": ProviderProfile(
         key="mistral",
+        catalog_provider="mistral",
         session_accumulation=True,
         api_key_env="MISTRAL_API_KEY",
         base_url_env="MISTRAL_BASE_URL",
@@ -553,6 +583,7 @@ PROVIDER_CONFIG: Dict[str, ProviderProfile] = {
     ),
     "together": ProviderProfile(
         key="together",
+        catalog_provider="togetherai",
         session_accumulation=True,
         api_key_env="TOGETHER_API_KEY",
         base_url_env="TOGETHER_BASE_URL",
@@ -576,6 +607,8 @@ PROVIDER_CONFIG: Dict[str, ProviderProfile] = {
     ),
     "fireworks": ProviderProfile(
         key="fireworks",
+        catalog_provider="fireworks-ai",
+        reports_cached_tokens=False,
         session_accumulation=True,
         api_key_env="FIREWORKS_API_KEY",
         base_url_env="FIREWORKS_BASE_URL",
@@ -599,6 +632,7 @@ PROVIDER_CONFIG: Dict[str, ProviderProfile] = {
     ),
     "cerebras": ProviderProfile(
         key="cerebras",
+        catalog_provider="cerebras",
         session_accumulation=True,
         api_key_env="CEREBRAS_API_KEY",
         base_url_env="CEREBRAS_BASE_URL",
@@ -628,6 +662,7 @@ PROVIDER_CONFIG: Dict[str, ProviderProfile] = {
     ),
     "qwen": ProviderProfile(
         key="qwen",
+        catalog_provider="alibaba",
         session_accumulation=True,
         api_key_env="DASHSCOPE_API_KEY",
         base_url_env="DASHSCOPE_BASE_URL",
@@ -655,6 +690,8 @@ PROVIDER_CONFIG: Dict[str, ProviderProfile] = {
     ),
     "huggingface": ProviderProfile(
         key="huggingface",
+        catalog_provider="huggingface",
+        reports_cached_tokens=False,
         session_accumulation=True,
         api_key_env="HF_TOKEN",
         base_url_env="HF_ROUTER_BASE_URL",
@@ -677,6 +714,8 @@ PROVIDER_CONFIG: Dict[str, ProviderProfile] = {
     ),
     "nvidia": ProviderProfile(
         key="nvidia",
+        catalog_provider="nvidia",
+        reports_cached_tokens=False,
         session_accumulation=True,
         api_key_env="NVIDIA_API_KEY",
         base_url_env="NVIDIA_BASE_URL",
@@ -697,6 +736,7 @@ PROVIDER_CONFIG: Dict[str, ProviderProfile] = {
     ),
     "perplexity": ProviderProfile(
         key="perplexity",
+        catalog_provider="perplexity",
         session_accumulation=True,
         api_key_env="PERPLEXITY_API_KEY",
         base_url_env="PERPLEXITY_BASE_URL",
@@ -750,6 +790,7 @@ PROVIDER_CONFIG: Dict[str, ProviderProfile] = {
     # ),
     "lmstudio": ProviderProfile(
         key="lmstudio",
+        reports_cached_tokens=False,
         session_accumulation=True,
         base_url_env="LMSTUDIO_BASE_URL",
         default_base_url="http://localhost:1234/v1",
@@ -778,6 +819,7 @@ PROVIDER_CONFIG: Dict[str, ProviderProfile] = {
     ),
     "vllm": ProviderProfile(
         key="vllm",
+        reports_cached_tokens=False,
         session_accumulation=True,
         base_url_env="VLLM_BASE_URL",
         default_base_url="http://localhost:8000/v1",
@@ -798,6 +840,7 @@ PROVIDER_CONFIG: Dict[str, ProviderProfile] = {
     ),
     "llamacpp": ProviderProfile(
         key="llamacpp",
+        reports_cached_tokens=False,
         session_accumulation=True,
         base_url_env="LLAMACPP_BASE_URL",
         default_base_url="http://localhost:8080/v1",

@@ -29,10 +29,8 @@ class _FakeLLM:
         return "SUMMARY OF OLD EVENTS"
 
 
-def test_requirements_survive_summarization(event_stream_limits):
+def test_requirements_survive_summarization():
     assert "requirements" in PROTECTED_SUMMARY_KINDS
-
-    event_stream_limits(100)
     es = EventStream(llm=_FakeLLM())
 
     # The protected contract, logged FIRST so it becomes the oldest event.
@@ -48,7 +46,7 @@ def test_requirements_survive_summarization(event_stream_limits):
         )
     es.mark_delivered()
 
-    es.summarize_by_LLM()
+    es.summarize_by_LLM(keep_tokens=100)
     kinds = [r.event.kind for r in es.tail_events]
 
     # Summarization actually happened (old filler collapsed into the summary)…
@@ -63,19 +61,17 @@ def test_requirements_survive_summarization(event_stream_limits):
     assert any("chronological version table" in r.event.message for r in kept)
 
 
-def test_protected_only_region_is_noop(event_stream_limits):
+def test_protected_only_region_is_noop():
     # If the only summarizable-aged content is protected, nothing is collapsed
     # (and it doesn't crash).
-    event_stream_limits(100)
     es = EventStream(llm=_FakeLLM())
     es.log("requirements", "\n  [ ] x: y\n         done_when: z")
     es.mark_delivered()
-    es.summarize_by_LLM()  # force; region is tiny + protected
+    es.summarize_by_LLM(keep_tokens=100)  # force; region is tiny + protected
     assert any(r.event.kind == "requirements" for r in es.tail_events)
 
 
-def test_only_the_newest_requirements_snapshot_stays_pinned(event_stream_limits):
-    event_stream_limits(100)
+def test_only_the_newest_requirements_snapshot_stays_pinned():
     llm = _FakeLLM()
     es = EventStream(llm=llm)
 
@@ -88,7 +84,7 @@ def test_only_the_newest_requirements_snapshot_stays_pinned(event_stream_limits)
             es.log("action_end", f"{task}: step {i} produced some output text")
     es.mark_delivered()
 
-    es.summarize_by_LLM()
+    es.summarize_by_LLM(keep_tokens=100)
 
     kept = [r for r in es.tail_events if r.event.kind == "requirements"]
     assert len(kept) == 1
@@ -98,11 +94,10 @@ def test_only_the_newest_requirements_snapshot_stays_pinned(event_stream_limits)
     assert "scope: send emails" in llm.prompts[0]
 
 
-def test_a_superseded_requirements_update_folds_too(event_stream_limits):
+def test_a_superseded_requirements_update_folds_too():
     """set_requirement re-issues the COMPLETE list on every update (e.g. the
     Verify pass marking items satisfied), so only the latest one is the
     contract."""
-    event_stream_limits(100)
     es = EventStream(llm=_FakeLLM())
     es.log("requirements", "\n  [ ] scope: send five emails")
     for i in range(100):
@@ -112,7 +107,7 @@ def test_a_superseded_requirements_update_folds_too(event_stream_limits):
         es.log("action_end", f"later step {i} produced some output text too")
     es.mark_delivered()
 
-    es.summarize_by_LLM()
+    es.summarize_by_LLM(keep_tokens=100)
 
     kept = [r.event.message for r in es.tail_events if r.event.kind == "requirements"]
     assert kept == ["[SAT] scope: send five emails"]

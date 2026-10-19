@@ -1,5 +1,5 @@
 ---
-version: 11
+version: 13
 purpose: agent operations manual
 ---
 
@@ -487,8 +487,10 @@ SERVER        provider 5xx, temporary                Retryable. Usually transien
 CONNECTION    timeout / network                      Retryable once connectivity is back.
 CONTEXT_      request exceeds context window         Auto-handled: the harness folds (summarizes)
 OVERFLOW                                             the event stream once, then retries. Still too
-                                                     big means model.context_window is set too
-                                                     small; surface that, do not hand-retry.
+                                                     big means the request cannot fit the model's
+                                                     window (for a model the catalog does not list,
+                                                     model.context_window may be set too small);
+                                                     surface that, do not hand-retry.
 BAD_REQUEST / other                                  Investigate before retrying.
 UNKNOWN
 ```
@@ -1590,7 +1592,9 @@ Run `/help` for the live list. If you need to verify a specific command, read it
 ```
 /help [command]           list all commands, or detail one. Always available.
 /menu                     show the main menu (Browser mode only; hidden)
-/clear  (alias /cls)      clear THIS session's conversation
+/clear  (alias /cls)      start THIS session over: its conversation and your context of it
+                          (event stream, todos, loaded skills, NOTE.md, EVENT.md) are cleared;
+                          long-term memory stays
 /reset                    delete all chat sessions + clear action history/context
 /exit                     quit the application
 /update (alias /upgrade)  check for updates and update CraftBot [--check]
@@ -1672,7 +1676,7 @@ If a user types a slash command and you receive the resulting run or message:
 - The runtime processes the command BEFORE you see it. Your role is to react to its outcome, not to re-execute.
 - For `/<skill_name>`, the runtime starts a run with the skill pre-loaded. You take over from there.
 - For `/<integration> connect` or `/cred status`, the result lands in the chat as text. The user may then ask you to do something with the now-connected integration.
-- For `/clear`, `/reset`, `/exit`: state changes happen immediately. You may not have continuity with prior conversation after these.
+- For `/clear`, `/reset`, `/exit`: state changes happen immediately. You have no continuity with the prior conversation after these; after `/clear` the session continues as a new one.
 
 ---
 
@@ -1834,9 +1838,10 @@ memory:
   item_word_limit: int           (default 150; words per stored memory item)
   processing_threshold: int      (default 25; min total unprocessed events before a memory run fires)
 
-context:                         (event-stream budget; a fold is decided on the WHOLE request)
-  reserve_tokens: int            (default 16384; headroom the fold/summary request itself needs)
-  keep_recent_tokens: int        (default 20000; recent events kept verbatim after a fold)
+context:                         (event-stream budget; a fold is decided on the WHOLE request,
+                                  against the serving model's window less its output cap)
+  keep_recent_tokens: int        (default 20000; most recent events kept verbatim after a fold,
+                                  never more than half the room the model's budget leaves)
 
 model:
   llm_provider: any provider key registered in the code (see ## Models);
@@ -1848,9 +1853,10 @@ model:
   image_gen_model / video_gen_model: string | null
   slow_mode: bool                (true throttles requests for rate-limited providers)
   slow_mode_tpm_limit: int       (default 30000; tokens per minute when slow_mode is true)
-  context_window: int            (default 128000; the configured model's context window in tokens;
-                                  drives the context-overflow fold; set it to match your model or
-                                  requests get force-summarized, then rejected. See ## Errors.)
+  context_window: int            (default 128000; the context window, in tokens, of a model the
+                                  bundled model catalog does not list: local servers, custom
+                                  endpoints. Set it to the window the server loaded. A catalogued
+                                  model uses its own window and ignores this. See ## Errors.)
 
 api_keys:
   openai: string                 (sk-...)

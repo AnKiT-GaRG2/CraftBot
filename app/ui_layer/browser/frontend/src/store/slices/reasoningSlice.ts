@@ -7,12 +7,32 @@ import { register } from '../socket/messageRegistry'
 // so it tracks model switches; the CHOICE is per session and lives on the
 // session (SessionInfo.reasoningEffort) or, for a draft chat, in UI state.
 
+/** How long the provider keeps a request's prompt cache. 'exact': guaranteed
+ *  at least this long; 'typical': the provider's usual figure only. */
+export interface CacheLifetime {
+  kind: 'exact' | 'typical'
+  seconds: number
+}
+
+/** What every model reports, adjustable reasoning or not. */
+interface ModelContext {
+  model: string
+  /** Where requests are served (provider, or its subscription backend). */
+  surface: string
+  /** Input tokens a request may carry at each choice; the event stream is
+   *  summarized when the next request would carry more. */
+  inputBudgets: Record<ReasoningChoice, number>
+  /** null: the provider documents no cache lifetime. */
+  cacheLifetime: CacheLifetime | null
+  /** false: responses never say what was cached, so no hit rate exists. */
+  reportsCachedTokens: boolean
+}
+
 export type ReasoningOptions =
   /** The model has no reasoning rule: nothing is adjustable. */
-  | { configurable: false; model: string }
-  | {
+  | (ModelContext & { configurable: false })
+  | (ModelContext & {
     configurable: true
-    model: string
     /** Selectable choices in display order. */
     choices: ReasoningChoice[]
     /** The model's default level (marked "Default"; new chats start here). */
@@ -21,7 +41,7 @@ export type ReasoningOptions =
     providerDefault: string
     /** Effective choice for every stored choice (pi-style clamping). */
     resolution: Record<ReasoningChoice, ReasoningChoice>
-  }
+  })
 
 interface ReasoningState {
   options: ReasoningOptions | null

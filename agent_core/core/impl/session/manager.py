@@ -236,9 +236,14 @@ class SessionManager:
         return True
 
     def clear_session(self, session_id: str) -> bool:
-        """Clear a session's conversation: event stream, todos, run counters.
+        """Start a session over as a new session.
 
-        The session itself (title, loaded skills) is kept.
+        Everything the agent knows about the session goes back to what
+        create_session gives it: event stream, LLM session state, todos,
+        token counters, loaded skills and per-session runtime state; a chat
+        goes back to "New chat" so its next request titles it again. Its
+        identity stays: id, type, workspace folder, Agent App project,
+        reasoning choice and GUI mode. The caller stops any run first.
         """
         session = self.sessions.get(session_id)
         if not session:
@@ -246,22 +251,33 @@ class SessionManager:
 
         session.todos = []
         session.reset_run_counters()
+        session.total_input_tokens = 0
+        session.total_output_tokens = 0
+        session.total_cache_tokens = 0
+        session.selected_skills = []
+        if session.type == SessionType.CHAT:
+            session.title = "New chat"
+        StateSession.end(session_id)
+        StateSession.start(
+            session_id, current_session=session, gui_mode=session.gui_mode
+        )
 
-        stream = self.event_stream_manager.get_stream_by_id(session_id)
-        if stream is not None and hasattr(stream, "clear"):
-            stream.clear()
+        # Only the session's own stream: get_stream_by_id falls back to the
+        # main session's, which a clear of another session must never touch.
+        if self.event_stream_manager and self.event_stream_manager.has_stream(
+            session_id
+        ):
+            self.event_stream_manager.get_stream_by_id(session_id).clear()
 
-        # Reset per-session LLM caches so the next call rebuilds from the
-        # now-empty stream.
+        # Forget the session's conversation on the LLM side and register it
+        # afresh, as create_session does, so the next request starts a new
+        # session prefix. Caches shared with other sessions are kept.
         if self.llm_interface and self.context_engine:
-            try:
-                self.llm_interface.remove_session_caches(session_id)
-            except Exception:
-                pass
+            self.llm_interface.restart_session(session_id)
             self._create_session_caches(session_id)
 
         self._persist(session)
-        logger.info(f"[SessionManager] Session {session_id} cleared")
+        logger.info(f"[SessionManager] Session {session_id} started over")
         return True
 
     def rename_session(self, session_id: str, title: str) -> bool:
@@ -291,8 +307,9 @@ class SessionManager:
         """Register a session loaded from persistence at boot.
 
         Compiles the action list (the installed action registry may have
-        changed between runs) and re-registers per-session state, but does
-        NOT touch the persisted event stream — the caller restores that.
+        changed between runs) and re-registers per-session state, including
+        its LLM session caches, but does NOT touch the persisted event
+        stream — the caller restores that.
         """
         self._compile_actions(session)
         if not session.workspace_dir:
@@ -304,6 +321,12 @@ class SessionManager:
         StateSession.start(
             session.id, current_session=session, gui_mode=session.gui_mode
         )
+
+        # LLM session caches live in memory, so a restored session has none.
+        # Without them every turn takes the stateless path and resends the
+        # whole prompt, of which only the system prompt hits the KV cache.
+        if self.llm_interface and self.context_engine:
+            self._create_session_caches(session.id)
         return session
 
     # ─────────────────────── Todo Management ─────────────────────────────────

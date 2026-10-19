@@ -17,6 +17,7 @@ import asyncio
 import contextvars
 import re
 import time
+from dataclasses import asdict, dataclass
 from typing import Any, Dict, List, Optional, Set, Tuple
 
 
@@ -42,12 +43,16 @@ from agent_core.core.hooks import (
     RecordLLMCallHook,
 )
 from agent_core.core.impl.llm import transports as _transports
+from agent_core.core.impl.llm.types import LLMCallType
+from agent_core.core.models.cache_lifetime import CacheLifetime, cache_lifetime
+from agent_core.core.models.catalog import model_limits
 from agent_core.core.models.reasoning import (
     ReasoningChoice,
     ReasoningDecision,
     ReasoningOptions,
     default_choice,
     reasoning_options as _reasoning_options,
+    reasoning_surface,
     resolve_reasoning,
 )
 from agent_core.core.models.registry import (
@@ -78,6 +83,61 @@ _llm_call_ctx: contextvars.ContextVar[dict] = contextvars.ContextVar(
 _active_session_key: contextvars.ContextVar[Optional[str]] = contextvars.ContextVar(
     "_active_session_key", default=None
 )
+
+
+def _call_type_name(task_id: str, key: str) -> str:
+    """The call type a session key ("<task_id>:<call_type>") was built from,
+    as its plain value. A key is built by formatting the call type, which for
+    an LLMCallType member is not its value (and may differ between Python
+    versions), so members are matched exactly rather than parsed."""
+    for member in LLMCallType:
+        if key == f"{task_id}:{member}":
+            return member.value
+    return key[len(task_id) + 1 :]
+
+
+def _call_type_from_name(name: str):
+    """The call type to build a session key from, for a saved plain value:
+    the LLMCallType member when there is one, so the key matches the ones
+    callers build with the member."""
+    try:
+        return LLMCallType(name)
+    except ValueError:
+        return name
+
+
+@dataclass(frozen=True)
+class RequestUsage:
+    """What the provider reported for a session's last request."""
+
+    #: Input tokens the request carried (cached ones included): the size of
+    #: the session's context at that request.
+    input_tokens: int
+    #: Of those, how many the provider served from its prompt cache.
+    cached_tokens: int
+    #: Epoch seconds when the request started. Provider cache lifetimes
+    #: count from the start of the request that wrote or read the cache.
+    started_at: float
+    #: Where it was served (reasoning_surface) and by which model: the cache
+    #: it wrote belongs to them.
+    surface: str
+    model: str
+
+
+@dataclass(frozen=True)
+class _SessionCheckpoint:
+    """A session history as of its last synced request.
+
+    How much of the history that request covered, the event stream's sync
+    marker at that moment, and the provider's input count for it. Saved
+    state is cut here, so it never holds a turn the stream has not recorded
+    as sent (a history grows in a worker thread before the router marks the
+    stream synced).
+    """
+
+    history_len: int
+    marker: Dict[str, Any]
+    input_tokens: Optional[int]
 
 
 class LLMContextOverflowError(RuntimeError):
@@ -299,6 +359,14 @@ class LLMInterface:
         # Input tokens the provider reported for each session's last request:
         # the exact size of the context that request carried.
         self._last_input_tokens: Dict[str, int] = {}
+        # Each session's last request as the provider reported it, for the
+        # chat input's context and cache readout. Unlike _last_input_tokens it
+        # survives a fold and a provider switch: it describes the request
+        # that was made, not the session history the next one builds on.
+        self._last_requests: Dict[str, RequestUsage] = {}
+        # Where each session history stood at its last synced request; what
+        # export_session saves so a restart can continue the session.
+        self._checkpoints: Dict[str, _SessionCheckpoint] = {}
 
         if ctx["byteplus"]:
             self.api_key = ctx["byteplus"]["api_key"]
@@ -450,6 +518,7 @@ class LLMInterface:
                 self._session_system_prompts = {}
                 self._session_histories = {}
                 self._last_input_tokens = {}
+                self._checkpoints = {}
 
             # Reinitialize Gemini cache manager
             if self._gemini_client:
@@ -503,6 +572,13 @@ class LLMInterface:
         session_key = _active_session_key.get()
         if session_key is not None:
             self._last_input_tokens[session_key] = input_tokens
+            self._last_requests[session_key] = RequestUsage(
+                input_tokens=input_tokens,
+                cached_tokens=cached_tokens,
+                started_at=_llm_call_ctx.get().get("started_at") or time.time(),
+                surface=self.surface(),
+                model=self.model,
+            )
         if not self._report_usage:
             return
 
@@ -613,6 +689,7 @@ class LLMInterface:
                 "thinking_budget": thinking_budget,
                 "reasoning_choice": reasoning_choice,
                 "start": time.perf_counter(),
+                "started_at": time.time(),
             }
         )
 
@@ -780,18 +857,16 @@ class LLMInterface:
         *,
         reasoning: Optional[ReasoningDecision],
     ) -> None:
-        """Refuse a request that cannot fit the configured context window.
+        """Refuse a request that cannot fit the model's context window.
 
         Counts the payload that is about to be sent: the system prompt plus
-        either the single user prompt or every accumulated message. Input and
-        the output reservation share the window. ``reasoning`` is the
-        request's decision, the same one its transport sends.
+        either the single user prompt or every accumulated message, against
+        _input_budget. ``reasoning`` is the request's decision, the same one
+        its transport sends.
         """
-        from app.config import get_context_window
-
-        window = get_context_window()
+        window, max_input = self._context_limits()
         reserved = self._output_reservation(reasoning)
-        budget = window - reserved
+        budget = self._input_budget(reasoning)
 
         total = count_tokens(system_prompt or "")
         if messages:
@@ -808,11 +883,68 @@ class LLMInterface:
             total += count_tokens(user_prompt)
 
         if total > budget:
+            input_cap = (
+                f", input capped at {max_input}"
+                if max_input is not None and max_input == budget
+                else ""
+            )
             raise LLMContextOverflowError(
                 f"Request of ~{total} input tokens exceeds the {budget}-token budget "
-                f"({window} window - {reserved} reserved for output) for "
+                f"({window} window - {reserved} reserved for output{input_cap}) for "
                 f"{self.provider}/{self.model}."
             )
+
+    def _context_limits(self) -> Tuple[int, Optional[int]]:
+        """The window and input limit of the model this interface serves.
+
+        From the model catalog (agent_core/core/models/catalog.py), looked up
+        per request, so a model switch or a fallback interface brings its own.
+        A model the catalog does not list (a local server, a custom endpoint)
+        uses settings.json model.context_window and has no input limit.
+        """
+        limits = model_limits(self.provider, self.model, self._auth_mode)
+        if limits is not None:
+            return limits.context_window, limits.max_input_tokens
+        from app.config import get_context_window
+
+        return get_context_window(), None
+
+    def _input_budget(self, reasoning: Optional[ReasoningDecision]) -> int:
+        """Input tokens a request with this reasoning decision may carry.
+
+        The window less the output cap the request sends, and never more than
+        the provider's input limit when it has one.
+        """
+        window, max_input = self._context_limits()
+        budget = window - self._output_reservation(reasoning)
+        return budget if max_input is None else min(budget, max_input)
+
+    def input_budget(self) -> int:
+        """Input tokens the next request of the call in flight may carry."""
+        return self._input_budget(self.reasoning_decision())
+
+    def input_budget_for(self, choice: ReasoningChoice) -> int:
+        """input_budget for a request made at reasoning ``choice``."""
+        return self._input_budget(
+            resolve_reasoning(self.provider, self.model, self._auth_mode, choice)
+        )
+
+    def prompt_cache_lifetime(self) -> Optional[CacheLifetime]:
+        """How long the provider keeps the prompt cache of a request to this
+        model, or None when it documents no lifetime."""
+        if self.provider == "bedrock" and not self._bedrock_model_supports_caching():
+            return None
+        return cache_lifetime(self.provider, self.model, self._auth_mode)
+
+    def reports_cached_tokens(self) -> bool:
+        """Whether this provider's responses say how much input was cached."""
+        profile = _get_registry().get(self.provider)
+        return profile is not None and profile.reports_cached_tokens
+
+    def surface(self) -> str:
+        """Where requests are served: the provider, or its subscription
+        backend (reasoning_surface). A prompt cache never crosses surfaces."""
+        return reasoning_surface(self.provider, self._auth_mode)
 
     def reasoning_options(self) -> Optional[ReasoningOptions]:
         """What the chat-input reasoning picker offers for the model in use.
@@ -1064,6 +1196,7 @@ class LLMInterface:
         json_mode: bool = True,
         thinking_budget: Optional[int] = None,
         reasoning_choice: Optional[ReasoningChoice] = None,
+        usage_key: Optional[str] = None,
     ) -> str:
         """Async wrapper that defers the blocking call to a worker thread.
 
@@ -1077,6 +1210,11 @@ class LLMInterface:
         ``reasoning_choice`` overrides the bound session's reasoning choice
         for this call; pass it only for work done for a chat that has no
         session yet.
+
+        ``usage_key`` ("<task_id>:<call_type>") is the session request this
+        call is made for when the provider has no session path: its usage is
+        recorded under that key, as a session call's is (see last_request).
+        It changes nothing that is sent.
         """
         # Stamp the context here, in the caller's context, so asyncio.to_thread
         # copies it into the worker thread where the capture runs.
@@ -1085,13 +1223,17 @@ class LLMInterface:
             thinking_budget=thinking_budget,
             reasoning_choice=reasoning_choice,
         )
-        return await asyncio.to_thread(
-            self._generate_response_sync,
-            system_prompt,
-            user_prompt,
-            log_response,
-            json_mode,
-        )
+        token = _active_session_key.set(usage_key)
+        try:
+            return await asyncio.to_thread(
+                self._generate_response_sync,
+                system_prompt,
+                user_prompt,
+                log_response,
+                json_mode,
+            )
+        finally:
+            _active_session_key.reset(token)
 
     def reset_failure_counter(self) -> None:
         """Reset the consecutive failure counter.
@@ -1191,6 +1333,7 @@ class LLMInterface:
         system_prompt = self._session_system_prompts.pop(session_key, None)
         self._session_histories.pop(session_key, None)
         self._last_input_tokens.pop(session_key, None)
+        self._checkpoints.pop(session_key, None)
 
         # Clean up provider-specific caches
         if self.provider == "byteplus" and self._byteplus_cache_manager:
@@ -1211,13 +1354,128 @@ class LLMInterface:
         session_key = f"{task_id}:{call_type}"
         self._session_histories.pop(session_key, None)
         self._last_input_tokens.pop(session_key, None)
+        self._checkpoints.pop(session_key, None)
         if self._byteplus_cache_manager:
             # This provider keeps the history server-side; end that chain too.
             self._byteplus_cache_manager.end_session(task_id, call_type)
 
+    def checkpoint_session(
+        self, task_id: str, call_type: str, marker: Optional[Dict[str, Any]]
+    ) -> None:
+        """Record that the session's history covers its event stream up to
+        ``marker`` (EventStream.sync_marker), right after the router marked
+        the stream synced. export_session saves the history as of here."""
+        key = f"{task_id}:{call_type}"
+        history = self._session_histories.get(key)
+        if marker is None or history is None:
+            self._checkpoints.pop(key, None)
+            return
+        self._checkpoints[key] = _SessionCheckpoint(
+            history_len=len(history),
+            marker=marker,
+            input_tokens=self._last_input_tokens.get(key),
+        )
+
+    def export_session(self, task_id: str) -> Dict[str, Dict[str, Any]]:
+        """The session's LLM state to save, per call type.
+
+        The history as of its checkpoint (with the stream marker and the
+        input count) and the last request. Restored by import_session, the
+        first request after a restart continues the session instead of
+        starting a new prefix, so it hits the provider's cache while that
+        cache lives.
+        """
+        prefix = f"{task_id}:"
+        state: Dict[str, Dict[str, Any]] = {}
+        for key in set(self._checkpoints) | set(self._last_requests):
+            if not key.startswith(prefix):
+                continue
+            entry: Dict[str, Any] = {"surface": self.surface()}
+            checkpoint = self._checkpoints.get(key)
+            if checkpoint is not None:
+                history = self._session_histories.get(key, [])
+                entry["history"] = list(history[: checkpoint.history_len])
+                entry["marker"] = checkpoint.marker
+                entry["input_tokens"] = checkpoint.input_tokens
+            request = self._last_requests.get(key)
+            if request is not None:
+                entry["last_request"] = asdict(request)
+            state[_call_type_name(task_id, key)] = entry
+        return state
+
+    def import_session(
+        self, task_id: str, state: Dict[str, Dict[str, Any]], stream
+    ) -> Optional[int]:
+        """Restore what export_session saved (at boot, before any request).
+
+        The last request always comes back: it only describes a request that
+        was made. The history comes back only if the provider in use built
+        it (message formats differ between providers) and ``stream`` still
+        holds the events it covers (EventStream.restore_sync_point checks);
+        otherwise the session starts a new prefix on its next request.
+
+        Returns the furthest sync point restored, or None if none was.
+        """
+        furthest: Optional[int] = None
+        for name, entry in state.items():
+            call_type = _call_type_from_name(name)
+            key = f"{task_id}:{call_type}"
+            request = entry.get("last_request")
+            if request:
+                try:
+                    self._last_requests[key] = RequestUsage(**request)
+                except TypeError:
+                    pass  # saved by a different RequestUsage shape: discard
+            history = entry.get("history")
+            marker = entry.get("marker")
+            if not history or not marker or entry.get("surface") != self.surface():
+                continue
+            if stream is None or not stream.restore_sync_point(call_type, marker):
+                continue
+            self._session_histories[key] = history
+            if entry.get("input_tokens") is not None:
+                self._last_input_tokens[key] = entry["input_tokens"]
+            self._checkpoints[key] = _SessionCheckpoint(
+                history_len=len(history),
+                marker=marker,
+                input_tokens=entry.get("input_tokens"),
+            )
+            furthest = max(furthest or 0, marker["point"])
+        return furthest
+
+    def restart_session(self, task_id: str) -> None:
+        """Forget a session's conversation so its next request starts anew.
+
+        Drops, for every call type of the session, what reset_session_history
+        drops (accumulated history, input count, BytePlus's server-side chain)
+        plus the last request. The registration stays, and so do caches other
+        sessions share: Gemini's explicit cache is keyed by the system prompt,
+        so deleting it (as end_all_session_caches does) would cost every
+        other session its cached prefix.
+        """
+        prefix = f"{task_id}:"
+        call_types = {
+            key[len(prefix) :]
+            for state in (
+                self._session_system_prompts,
+                self._session_histories,
+                self._last_input_tokens,
+                self._last_requests,
+            )
+            for key in state
+            if key.startswith(prefix)
+        }
+        for call_type in call_types:
+            self.reset_session_history(task_id, call_type)
+            self._last_requests.pop(f"{prefix}{call_type}", None)
+
     def last_input_tokens(self, task_id: str, call_type: str) -> Optional[int]:
         """Input tokens the provider reported for this session's last request."""
         return self._last_input_tokens.get(f"{task_id}:{call_type}")
+
+    def last_request(self, task_id: str, call_type: str) -> Optional[RequestUsage]:
+        """This session's last request as the provider reported it."""
+        return self._last_requests.get(f"{task_id}:{call_type}")
 
     def fits_context(
         self, task_id: str, call_type: str, system_prompt: Optional[str], pending: str
@@ -1226,26 +1484,20 @@ class LLMInterface:
 
         Projection: the provider's own input count for the previous request
         (exact, and already paid for) plus a local count of only what is new,
-        plus the output reservation, against the window less the headroom the
-        summary request needs. On a session's first request there is no
+        against input_budget. On a session's first request there is no
         provider count yet, so the whole prompt is counted locally.
 
-        The output reservation is the one the pre-send check
-        (_check_context_fits) applies, including the reasoning output cap of
-        the session's choice, so the stream folds before that check could
-        refuse the request.
+        The budget is the one the pre-send check (_check_context_fits)
+        applies. The projection does not count the previous answer, so a
+        request it lets through can still fail that check; the router's
+        overflow handler then folds, before anything is sent.
         """
-        from app.config import get_context_window, get_reserve_tokens
-
         last = self._last_input_tokens.get(f"{task_id}:{call_type}")
         if last is None:
             projected = count_tokens(system_prompt or "") + count_tokens(pending)
         else:
             projected = last + count_tokens(pending)
-        return (
-            projected + self._output_reservation(self.reasoning_decision())
-            <= get_context_window() - get_reserve_tokens()
-        )
+        return projected <= self.input_budget()
 
     def end_all_session_caches(self, task_id: str) -> None:
         """End ALL session/explicit caches for a task (all call types).
@@ -1271,7 +1523,12 @@ class LLMInterface:
         # Clean up multi-turn message histories across all providers that
         # accumulate (anthropic, bedrock, openrouter-via-claude, gemini,
         # openai-subscription).
-        for state in (self._session_histories, self._last_input_tokens):
+        for state in (
+            self._session_histories,
+            self._last_input_tokens,
+            self._last_requests,
+            self._checkpoints,
+        ):
             for key in [k for k in state if k.startswith(f"{task_id}:")]:
                 state.pop(key, None)
 
@@ -1306,11 +1563,11 @@ class LLMInterface:
                 return True
             if self.provider == "gemini" and self._gemini_cache_manager:
                 return True
-            if (
-                self.provider
-                in ("openai", "deepseek", "grok", "openrouter", "glm", "fugu")
-                and self.client
-            ):
+            # The same set create_session_cache registers and the session
+            # dispatcher serves. A hand-kept subset here sent every other
+            # accumulating provider down the stateless path, re-sending the
+            # whole prompt each turn instead of growing a cached prefix.
+            if self.provider in _session_cc_providers() and self.client:
                 return True
             if self.provider == "anthropic" and self._anthropic_client:
                 return True

@@ -40,6 +40,20 @@
     "defaultTag": "기본값",
     "notConfigurable": "{{model}}에서는 추론을 조정할 수 없습니다",
     "clamped": "이 모델에서는 {{requested}}을(를) 사용할 수 없어 {{effective}}을(를) 사용합니다.",
+    "context": {
+      "label": "컨텍스트",
+      "summarizesAt": "{{max}}에서 요약"
+    },
+    "cache": {
+      "label": "캐시",
+      "hit": "{{percent}} 캐시됨",
+      "notReported": "보고되지 않음",
+      "notYet": "아직 캐시 없음",
+      "timeLeft": "남은 시간",
+      "about": "~{{time}}",
+      "expired": "만료됨",
+      "noExpiry": "고정 만료 없음"
+    },
     "choice": {
       "provider_default": "제공자 기본값",
       "off": "끄기",

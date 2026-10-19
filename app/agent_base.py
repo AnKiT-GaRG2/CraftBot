@@ -548,12 +548,22 @@ class AgentBase:
         return self.session_manager.delete_session(session_id)
 
     async def clear_session(self, session_id: str) -> bool:
-        """Clear a session's conversation (event stream, todos, budgets).
+        """Start a session over as a new session (/clear, the chat's clear).
+
+        A run in flight is stopped first: it would otherwise carry on the old
+        work into the fresh session. Then the agent-side state is reset and
+        saved, event stream included (see SessionManager.clear_session), and
+        so is the LLM state, so a restart cannot bring the old one back.
 
         Chat-message rows are cleared by the adapter (chat storage is a UI
         concern); this handles the agent-side state.
         """
-        return self.session_manager.clear_session(session_id)
+        if session_id in self.busy_sessions:
+            await self.request_run_stop(session_id)
+        if not self.session_manager.clear_session(session_id):
+            return False
+        self._persist_llm_session(session_id)
+        return True
 
     def close_ui_artifact(self, session_id: str, artifact_id: str) -> int:
         """The user closed a Generative UI output: the session's events keep
@@ -1190,6 +1200,21 @@ class AgentBase:
             logger.warning(
                 f"[PERSIST] Event stream persist failed for {session_id}: {e}"
             )
+        self._persist_llm_session(session_id)
+
+    def _persist_llm_session(self, session_id: str) -> None:
+        """Save a session's LLM state (LLMInterface.export_session), so a
+        restart continues the session instead of starting a new prefix."""
+        try:
+            from app.usage.session_storage import get_session_storage
+
+            get_session_storage().persist_llm_session(
+                session_id, self.llm.export_session(session_id)
+            )
+        except Exception as e:
+            logger.warning(
+                f"[PERSIST] LLM session persist failed for {session_id}: {e}"
+            )
 
     def _invalidate_session_caches(self, session_id: str) -> None:
         """Rebuild a session's LLM caches after a capability change."""
@@ -1246,6 +1271,10 @@ class AgentBase:
             query=trigger_data.query,
             session_id=trigger_data.session_id,
         )
+        # The decision request's context size and cache use are recorded on
+        # the LLM interface now; send them to the chat input's reasoning menu.
+        if self.ui_controller:
+            await self.ui_controller.notify_session_updated(trigger_data.session_id)
 
         if not action_decisions:
             raise ValueError("Action router returned no decision.")
@@ -3770,8 +3799,17 @@ class AgentBase:
                     stream._total_tokens = sum(
                         get_cached_token_count(r) for r in records
                     )
-                    # The model read this history before the restart.
-                    stream.mark_delivered()
+                    # The LLM session comes back where the stream still holds
+                    # what it covers, so the first request continues the
+                    # session on the provider's cached prefix.
+                    synced = self.llm.import_session(
+                        session.id, storage.get_llm_session(session.id), stream
+                    )
+                    # The model read this history before the restart: up to
+                    # the sync point when the session continues (its next
+                    # request sends the rest), all of it otherwise (its next
+                    # request sends everything).
+                    stream.mark_delivered(synced)
 
                     logger.info(
                         f"[RESTORE] Restored session '{session.title}' "
@@ -3811,6 +3849,7 @@ class AgentBase:
                             session_id,
                             self.event_stream_manager.get_stream_by_id(session_id),
                         )
+                    self._persist_llm_session(session_id)
                     count += 1
                 except Exception as e:
                     logger.warning(

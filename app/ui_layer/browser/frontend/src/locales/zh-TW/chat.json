@@ -40,6 +40,20 @@
     "defaultTag": "預設",
     "notConfigurable": "{{model}} 不支援調整推理",
     "clamped": "此模型不支援「{{requested}}」，因此使用「{{effective}}」。",
+    "context": {
+      "label": "上下文",
+      "summarizesAt": "達到 {{max}} 時摘要"
+    },
+    "cache": {
+      "label": "快取",
+      "hit": "{{percent}} 已快取",
+      "notReported": "未回報",
+      "notYet": "尚未快取",
+      "timeLeft": "剩餘時間",
+      "about": "~{{time}}",
+      "expired": "已過期",
+      "noExpiry": "無固定有效期"
+    },
     "choice": {
       "provider_default": "供應商預設",
       "off": "關閉",

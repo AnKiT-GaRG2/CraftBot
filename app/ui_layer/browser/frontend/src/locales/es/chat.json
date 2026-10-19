@@ -40,6 +40,20 @@
     "defaultTag": "Predeterminado",
     "notConfigurable": "El razonamiento no es ajustable en {{model}}",
     "clamped": "{{requested}} no está disponible en este modelo, así que se usa {{effective}}.",
+    "context": {
+      "label": "Contexto",
+      "summarizesAt": "Se resume al llegar a {{max}}"
+    },
+    "cache": {
+      "label": "Caché",
+      "hit": "{{percent}} en caché",
+      "notReported": "No informado",
+      "notYet": "Aún sin caché",
+      "timeLeft": "Tiempo restante",
+      "about": "~{{time}}",
+      "expired": "Caducada",
+      "noExpiry": "Sin caducidad fija"
+    },
     "choice": {
       "provider_default": "Predeterminado del proveedor",
       "off": "Desactivado",

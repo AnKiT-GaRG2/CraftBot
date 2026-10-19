@@ -40,6 +40,20 @@
     "defaultTag": "Bawaan",
     "notConfigurable": "Penalaran tidak dapat diatur untuk {{model}}",
     "clamped": "{{requested}} tidak tersedia pada model ini, jadi {{effective}} yang digunakan.",
+    "context": {
+      "label": "Konteks",
+      "summarizesAt": "Diringkas pada {{max}}"
+    },
+    "cache": {
+      "label": "Cache",
+      "hit": "{{percent}} dari cache",
+      "notReported": "Tidak dilaporkan",
+      "notYet": "Belum ada cache",
+      "timeLeft": "Sisa waktu",
+      "about": "~{{time}}",
+      "expired": "Kedaluwarsa",
+      "noExpiry": "Tanpa batas waktu tetap"
+    },
     "choice": {
       "provider_default": "Bawaan penyedia",
       "off": "Mati",
