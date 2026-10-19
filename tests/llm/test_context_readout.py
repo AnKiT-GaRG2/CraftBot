@@ -10,7 +10,8 @@ lasts). These tests pin:
 * every provider whose profile accumulates a session history takes the
   session path (a hand-kept subset of them used to re-send the whole prompt
   every turn);
-* cache lifetimes exist only where the provider documents one;
+* cache facts come from the model catalog, with defaults for what it does
+  not list;
 * the wire payloads the menu reads.
 """
 
@@ -23,14 +24,37 @@ from types import SimpleNamespace
 import pytest
 
 from agent_core.core.impl.llm import LLMCallType
-from agent_core.core.models.cache_lifetime import CacheLifetimeKind, cache_lifetime
-from agent_core.core.models.catalog import ModelLimits
+from agent_core.core.models.catalog import (
+    CacheLifetime,
+    CacheLifetimeKind,
+    ModelLimits,
+    reports_cached_tokens,
+)
 from agent_core.core.models.reasoning import ReasoningChoice
 from agent_core.core.models.registry import session_cc_providers
 
 from .golden.conftest import build_interface
 
 ACTION = LLMCallType.ACTION_SELECTION
+
+#: A catalog of made-up models, so these tests pin behavior, not provider data.
+FAKE_CATALOG = {
+    "surfaces": {"quiet": {"reports_cached_tokens": False}},
+    "models": {
+        "openai/timed-model": {
+            "context_window": 400_000,
+            "cache_lifetime": {"kind": "exact", "seconds": 1800},
+        },
+        "openai/untimed-model": {"context_window": 128_000},
+    },
+}
+
+
+@pytest.fixture
+def fake_catalog(monkeypatch):
+    import agent_core.core.models.catalog as catalog
+
+    monkeypatch.setattr(catalog, "_catalog", lambda: FAKE_CATALOG)
 
 
 # ──────────────────────── recording the last request ────────────────────────
@@ -90,46 +114,22 @@ def test_every_accumulating_provider_takes_the_session_path(monkeypatch, provide
     assert iface.has_session_cache("s1", ACTION)
 
 
-# ─────────────────────────── cache lifetimes ───────────────────────────
+# ─────────────────────────── cache facts ───────────────────────────
 
 
-def test_cache_lifetimes_exist_only_where_documented():
-    luna = cache_lifetime("openai", "gpt-6-luna")
-    assert luna.kind is CacheLifetimeKind.EXACT and luna.seconds == 30 * 60
-    older = cache_lifetime("openai", "gpt-5.2-2025-12-11")
-    assert older.kind is CacheLifetimeKind.TYPICAL and older.seconds == 5 * 60
-    claude = cache_lifetime("anthropic", "claude-sonnet-4-6")
-    assert claude.kind is CacheLifetimeKind.EXACT and claude.seconds == 60 * 60
-    # Undocumented or best-effort: no countdown.
-    assert cache_lifetime("openai", "gpt-6.1-sol", "subscription") is None
-    assert cache_lifetime("grok", "grok-4.3") is None
-    assert cache_lifetime("deepseek", "deepseek-v4-pro") is None
-    assert cache_lifetime("openrouter", "openai/gpt-6.1-sol") is None
-    assert cache_lifetime("lmstudio", "openai/gpt-oss-20b") is None
+def test_the_cache_lifetime_comes_from_the_catalog(monkeypatch, fake_catalog):
+    timed, _ = build_interface(monkeypatch, "openai", "timed-model")
+    assert timed.prompt_cache_lifetime() == CacheLifetime(CacheLifetimeKind.EXACT, 1800)
+    # Catalogued without one, or not catalogued at all: no countdown.
+    untimed, _ = build_interface(monkeypatch, "openai", "untimed-model")
+    assert untimed.prompt_cache_lifetime() is None
+    unknown, _ = build_interface(monkeypatch, "openai", "unknown-model")
+    assert unknown.prompt_cache_lifetime() is None
 
 
-def test_the_gpt_5_6_rows_name_real_models():
-    from agent_core.core.models.cache_lifetime import _MODEL_LIFETIMES
-    from agent_core.core.models.catalog import model_limits
-
-    for model in _MODEL_LIFETIMES["openai"]:
-        assert model_limits("openai", model) is not None, model
-
-
-def test_bedrock_counts_down_only_for_models_that_take_cache_points(monkeypatch):
-    claude, _ = build_interface(
-        monkeypatch, "bedrock", "us.anthropic.claude-haiku-4-5-20251001-v1:0"
-    )
-    assert claude.prompt_cache_lifetime().seconds == 5 * 60
-    llama, _ = build_interface(monkeypatch, "bedrock", "meta.llama3-70b-instruct-v1:0")
-    assert llama.prompt_cache_lifetime() is None
-
-
-def test_providers_that_never_report_cached_tokens_say_so(monkeypatch):
-    fireworks, _ = build_interface(monkeypatch, "fireworks", "some-model")
-    openai, _ = build_interface(monkeypatch, "openai", "gpt-6-luna")
-    assert fireworks.reports_cached_tokens() is False
-    assert openai.reports_cached_tokens() is True
+def test_cached_input_is_reported_unless_the_catalog_says_not(fake_catalog):
+    assert reports_cached_tokens("quiet") is False
+    assert reports_cached_tokens("openai") is True  # not listed: the default
 
 
 # ─────────────────────────── budgets per choice ───────────────────────────
@@ -161,10 +161,10 @@ def _adapter(llm, sent):
     )
 
 
-def test_the_reasoning_options_carry_budgets_and_cache_facts(monkeypatch):
+def test_the_reasoning_options_carry_budgets_and_cache_facts(monkeypatch, fake_catalog):
     from app.ui_layer.adapters.browser_adapter import BrowserAdapter
 
-    iface, _ = build_interface(monkeypatch, "openai", "gpt-6-luna")
+    iface, _ = build_interface(monkeypatch, "openai", "timed-model")
     sent = []
     asyncio.run(
         BrowserAdapter._handle_reasoning_options_get(_adapter(iface, sent), None)

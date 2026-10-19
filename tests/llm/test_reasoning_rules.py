@@ -1034,8 +1034,13 @@ def test_reasoning_options_handler(monkeypatch):
     }
     # No reasoning parameter is sent, so every choice has the same budget.
     assert len(set(data["inputBudgets"].values())) == 1
-    assert data["cacheLifetime"] == {"kind": "typical", "seconds": 300}
-    assert data["reportsCachedTokens"] is True
+    lifetime = unruled.prompt_cache_lifetime()
+    assert data["cacheLifetime"] == (
+        None
+        if lifetime is None
+        else {"kind": lifetime.kind.value, "seconds": lifetime.seconds}
+    )
+    assert data["reportsCachedTokens"] is unruled.reports_cached_tokens()
 
 
 def test_session_reasoning_set_handler(tmp_path: Path):

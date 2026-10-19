@@ -44,8 +44,11 @@ from agent_core.core.hooks import (
 )
 from agent_core.core.impl.llm import transports as _transports
 from agent_core.core.impl.llm.types import LLMCallType
-from agent_core.core.models.cache_lifetime import CacheLifetime, cache_lifetime
-from agent_core.core.models.catalog import model_limits
+from agent_core.core.models.catalog import (
+    CacheLifetime,
+    model_limits,
+    reports_cached_tokens as _reports_cached_tokens,
+)
 from agent_core.core.models.reasoning import (
     ReasoningChoice,
     ReasoningDecision,
@@ -931,15 +934,14 @@ class LLMInterface:
 
     def prompt_cache_lifetime(self) -> Optional[CacheLifetime]:
         """How long the provider keeps the prompt cache of a request to this
-        model, or None when it documents no lifetime."""
-        if self.provider == "bedrock" and not self._bedrock_model_supports_caching():
-            return None
-        return cache_lifetime(self.provider, self.model, self._auth_mode)
+        model (model catalog); None when the catalog gives none."""
+        limits = model_limits(self.provider, self.model, self._auth_mode)
+        return limits.cache_lifetime if limits is not None else None
 
     def reports_cached_tokens(self) -> bool:
-        """Whether this provider's responses say how much input was cached."""
-        profile = _get_registry().get(self.provider)
-        return profile is not None and profile.reports_cached_tokens
+        """Whether this provider's responses say how much input was cached
+        (model catalog)."""
+        return _reports_cached_tokens(self.provider, self._auth_mode)
 
     def surface(self) -> str:
         """Where requests are served: the provider, or its subscription

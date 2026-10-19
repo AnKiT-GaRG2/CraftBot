@@ -344,40 +344,63 @@ def test_the_budget_follows_a_model_switch():
 # ------------------------------------------------------------- the catalog
 
 
-def test_catalog_lookups_are_exact_and_per_surface():
-    # The log's model: a dated snapshot shares its alias's row.
-    assert model_limits("openai", "gpt-5.2-2025-12-11") == model_limits(
-        "openai", "gpt-5.2"
+def test_catalog_lookups_are_exact_and_per_surface(monkeypatch):
+    import agent_core.core.models.catalog as catalog
+
+    monkeypatch.setattr(
+        catalog,
+        "_catalog",
+        lambda: {
+            "surfaces": {},
+            "models": {
+                "openai/some-model": {
+                    "context_window": 400_000,
+                    "max_input_tokens": 272_000,
+                },
+                "openai_subscription/some-model": {"context_window": 272_000},
+            },
+        },
     )
-    assert model_limits("openai", "gpt-5.2").max_input_tokens is not None
-    # The ChatGPT-subscription surface has its own rows (the Codex windows).
-    api = model_limits("openai", "gpt-6.1-sol")
-    subscription = model_limits("openai", "gpt-6.1-sol", "subscription")
-    assert api is not None and subscription is not None and api != subscription
-    # No prefix or substring matching.
-    assert model_limits("openai", "gpt-6.1") is None
-    assert model_limits("openai", "gpt-6.1-sol-x") is None
-    # Local servers run whatever window the user loaded.
-    assert model_limits("lmstudio", "openai/gpt-oss-20b") is None
+    api = model_limits("openai", "some-model")
+    assert api == ModelLimits(400_000, max_input_tokens=272_000)
+    # The ChatGPT-subscription surface has rows of its own.
+    assert model_limits("openai", "some-model", "subscription") == ModelLimits(272_000)
+    # No prefix or substring matching; an unlisted model is not catalogued.
+    assert model_limits("openai", "some") is None
+    assert model_limits("openai", "some-model-x") is None
+    assert model_limits("lmstudio", "some-model") is None
 
 
-def test_every_catalog_row_is_well_formed():
+def test_the_shipped_catalog_is_well_formed():
     import json
 
-    from agent_core.core.models.catalog import CATALOG_PATH
+    from agent_core.core.models.catalog import CATALOG_PATH, CacheLifetimeKind
     from agent_core.core.models.provider_config import PROVIDER_CONFIG
+    from agent_core.core.models.reasoning import (
+        SUBSCRIPTION_AUTH_MODE,
+        reasoning_surface,
+    )
 
-    rows = json.loads(CATALOG_PATH.read_text(encoding="utf-8"))["models"]
-    surfaces = {key for key, p in PROVIDER_CONFIG.items() if p.catalog_provider}
-    surfaces.add("openai_subscription")
-    assert rows
-    for key, row in rows.items():
+    catalog = json.loads(CATALOG_PATH.read_text(encoding="utf-8"))
+    surfaces = {
+        reasoning_surface(key, auth)
+        for key in PROVIDER_CONFIG
+        for auth in ("api_key", SUBSCRIPTION_AUTH_MODE)
+    }
+    assert set(catalog["surfaces"]) <= surfaces
+    for facts in catalog["surfaces"].values():
+        assert set(facts) == {"reports_cached_tokens"}
+    assert catalog["models"]
+    for key, row in catalog["models"].items():
         surface, _, model_id = key.partition("/")
         assert surface in surfaces and model_id, key
-        assert set(row) <= {"context_window", "max_input_tokens"}, key
+        assert set(row) <= {"context_window", "max_input_tokens", "cache_lifetime"}, key
         assert isinstance(row["context_window"], int) and row["context_window"] > 0
         if "max_input_tokens" in row:
             assert 0 < row["max_input_tokens"] < row["context_window"], key
+        if "cache_lifetime" in row:
+            CacheLifetimeKind(row["cache_lifetime"]["kind"])
+            assert row["cache_lifetime"]["seconds"] > 0, key
 
 
 # ------------------------------------------------- how much a fold keeps
