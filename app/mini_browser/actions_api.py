@@ -67,6 +67,7 @@ MAX_KEYS_CHARS = 64
 MAX_WAIT_TEXT_CHARS = 1000
 MAX_VALUE_CHARS = 1000
 MAX_USERNAME_CHARS = 256
+MAX_LOGIN_NAME_CHARS = 100
 MAX_URL_CHARS = 8192
 MAX_PATHS = 10
 MAX_PATH_CHARS = 1024
@@ -415,6 +416,7 @@ def _v_upload_file(
 
 def _v_login(data: Dict[str, Any], _context: Optional[UrlContext]) -> Dict[str, Any]:
     return {
+        "login_name": _text(data, "login_name", max_chars=MAX_LOGIN_NAME_CHARS),
         "username": _text(data, "username", max_chars=MAX_USERNAME_CHARS),
         "submit": _flag(data, "submit", True),
     }
