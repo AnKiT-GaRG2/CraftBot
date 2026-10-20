@@ -97,6 +97,22 @@ export interface SessionInfo {
   /** Always set by the backend; null only on the client-side placeholder for
    *  the main session before the backend has sent it. */
   reasoningEffort: ReasoningChoice | null
+  /** The session's last decision request as the provider reported it; null
+   *  until its first request (also after a restart). */
+  lastRequest: LastRequest | null
+}
+
+/** One LLM request's context size and cache use (the reasoning menu readout). */
+export interface LastRequest {
+  /** Input tokens the request carried, cached ones included. */
+  inputTokens: number
+  /** Of those, how many the provider served from its prompt cache. */
+  cachedTokens: number
+  /** Epoch ms when the request started; cache lifetimes count from here. */
+  startedAt: number
+  /** Where it was served and by which model: its cache belongs to them. */
+  surface: string
+  model: string
 }
 
 // ─────────────────────────────────────────────────────────────────────

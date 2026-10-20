@@ -4349,9 +4349,13 @@ A quick Q&A will now begin to understand your objectives to serve you better:"""
     # Session Handlers (sidebar surface)
     # ─────────────────────────────────────────────────────────────────────
 
-    @staticmethod
-    def _session_info(session) -> Dict[str, Any]:
+    def _session_info(self, session) -> Dict[str, Any]:
         """SessionInfo wire shape for a Session."""
+        from agent_core.core.impl.llm import LLMCallType
+
+        usage = self._controller.agent.llm.last_request(
+            session.id, LLMCallType.ACTION_SELECTION
+        )
         return {
             "id": session.id,
             "type": session.type,
@@ -4360,6 +4364,19 @@ A quick Q&A will now begin to understand your objectives to serve you better:"""
             "lastActiveAt": session.last_active_at,
             "agentAppProjectId": session.agent_app_project_id,
             "reasoningEffort": session.reasoning_effort,
+            # The last decision request, for the reasoning menu's context and
+            # cache readout; null until the session's first request.
+            "lastRequest": (
+                {
+                    "inputTokens": usage.input_tokens,
+                    "cachedTokens": usage.cached_tokens,
+                    "startedAt": round(usage.started_at * 1000),
+                    "surface": usage.surface,
+                    "model": usage.model,
+                }
+                if usage is not None
+                else None
+            ),
         }
 
     @staticmethod
@@ -4431,10 +4448,23 @@ A quick Q&A will now begin to understand your objectives to serve you better:"""
         """
         llm = self._controller.agent.llm
         options = llm.reasoning_options()
+        lifetime = llm.prompt_cache_lifetime()
         data: Dict[str, Any] = {
             "success": True,
             "model": llm.model,
+            "surface": llm.surface(),
             "configurable": options is not None,
+            # The input budget (where the event stream is summarized) at each
+            # choice: a reasoning level's output cap comes out of the window.
+            "inputBudgets": {
+                choice.value: llm.input_budget_for(choice) for choice in ReasoningChoice
+            },
+            "cacheLifetime": (
+                {"kind": lifetime.kind.value, "seconds": lifetime.seconds}
+                if lifetime is not None
+                else None
+            ),
+            "reportsCachedTokens": llm.reports_cached_tokens(),
         }
         if options is not None:
             data.update(
@@ -4457,6 +4487,9 @@ A quick Q&A will now begin to understand your objectives to serve you better:"""
         try:
             from app.usage import get_action_storage, get_chat_storage
 
+            # Agent side first: it stops a run in flight, whose last rows
+            # must go with the conversation rather than land after the clear.
+            await self._controller.agent.clear_session(session_id)
             try:
                 # Ordered storage worker: runs after any insert still queued
                 # for this session, so no message resurfaces after the clear.
@@ -4469,7 +4502,6 @@ A quick Q&A will now begin to understand your objectives to serve you better:"""
                 get_action_storage().clear_items(session_id)
             except Exception:
                 pass
-            await self._controller.agent.clear_session(session_id)
             await self.broadcast_session_cleared(session_id)
         except Exception as e:
             logger.error(f"[SESSION] Clear failed for {session_id}: {e}")
@@ -4538,7 +4570,9 @@ A quick Q&A will now begin to understand your objectives to serve you better:"""
 
         Called by the /clear command (which has already cleared storage and
         agent-side state) and by the session_clear handler. The activity
-        feed is part of the conversation, so its items go with it.
+        feed is part of the conversation, so its items go with it. The
+        session started over, so its info (a chat's title, the reasoning
+        menu's context readout) is sent again too.
         """
         self._chat.drop_session_messages(session_id)
         self._action_panel.drop_session_items(session_id)
@@ -4548,6 +4582,7 @@ A quick Q&A will now begin to understand your objectives to serve you better:"""
                 "data": {"sessionId": session_id},
             }
         )
+        await self.broadcast_session_updated(session_id)
 
     # ─────────────────────────────────────────────────────────────────────
     # Settings Operation Handlers

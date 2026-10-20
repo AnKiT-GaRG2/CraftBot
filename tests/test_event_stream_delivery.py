@@ -30,6 +30,9 @@ from agent_core.core.impl.event_stream.event_stream import (
 )
 
 
+KEEP_TOKENS = 2000
+
+
 class _RecordingLLM:
     consecutive_failures = 0
     _max_consecutive_failures = 5
@@ -42,8 +45,7 @@ class _RecordingLLM:
         return "SUMMARY OF OLD EVENTS"
 
 
-def _stream(tmp_path, event_stream_limits, keep_recent_tokens=2000):
-    event_stream_limits(keep_recent_tokens)
+def _stream(tmp_path):
     llm = _RecordingLLM()
     return EventStream(llm=llm, temp_dir=tmp_path / "events"), llm
 
@@ -57,10 +59,8 @@ def _read_result(i, size):
     return f"READ RESULT {i}: " + ("line of file content " * size)
 
 
-def test_new_events_start_undelivered_and_mark_delivered_covers_the_tail(
-    tmp_path, event_stream_limits
-):
-    es, _ = _stream(tmp_path, event_stream_limits)
+def test_new_events_start_undelivered_and_mark_delivered_covers_the_tail(tmp_path):
+    es, _ = _stream(tmp_path)
     _history(es, 3)
     assert not any(r.delivered for r in es.tail_events)
 
@@ -71,27 +71,27 @@ def test_new_events_start_undelivered_and_mark_delivered_covers_the_tail(
     assert not es.tail_events[-1].delivered
 
 
-def test_a_session_sync_marks_delivery(tmp_path, event_stream_limits):
-    es, _ = _stream(tmp_path, event_stream_limits)
+def test_a_session_sync_marks_delivery(tmp_path):
+    es, _ = _stream(tmp_path)
     _history(es, 3)
     es.mark_session_synced("action_selection")
     assert all(r.delivered for r in es.tail_events)
 
 
-def test_a_fold_leaves_unread_results_verbatim(tmp_path, event_stream_limits):
+def test_a_fold_leaves_unread_results_verbatim(tmp_path):
     """The log's case: the agent's parallel reads return, then the fold runs."""
-    es, llm = _stream(tmp_path, event_stream_limits)
+    es, llm = _stream(tmp_path)
     _history(es)
     es.mark_delivered()
 
-    # Larger than keep_recent_tokens together, and each one oversized: before
+    # Larger than the keep target together, and each one oversized: before
     # the fix, every one of them became a pointer or a summary line.
     results = [_read_result(i, 1200) for i in range(3)]
     assert all(len(r) > MAX_EVENT_INLINE_CHARS for r in results)
     for r in results:
         es.log("action_end", r, action_name="read_file")
 
-    es.summarize_by_LLM()
+    es.summarize_by_LLM(keep_tokens=KEEP_TOKENS)
 
     messages = [r.event.message for r in es.tail_events]
     for r in results:
@@ -103,27 +103,25 @@ def test_a_fold_leaves_unread_results_verbatim(tmp_path, event_stream_limits):
     assert not any(m.startswith("old step") for m in messages)
 
 
-def test_read_results_collapse_once_the_model_has_them(tmp_path, event_stream_limits):
+def test_read_results_collapse_once_the_model_has_them(tmp_path):
     # A keep window the read result fits in, so it stays in the tail.
-    es, _ = _stream(tmp_path, event_stream_limits, keep_recent_tokens=6000)
+    es, _ = _stream(tmp_path)
     _history(es)
     es.mark_delivered()
     es.log("action_end", _read_result(0, 1200), action_name="read_file")
-    es.summarize_by_LLM()
+    es.summarize_by_LLM(keep_tokens=6000)
     assert not list((tmp_path / "events").glob("event_read_file_*.txt"))
 
     es.mark_session_synced("action_selection")  # the agent's next turn
-    es.summarize_by_LLM()
+    es.summarize_by_LLM(keep_tokens=6000)
 
     rec = next(r for r in es.tail_events if r.event.action_name == "read_file")
     assert len(rec.event.message) <= MAX_EVENT_INLINE_CHARS
     assert list((tmp_path / "events").glob("event_read_file_*.txt"))
 
 
-def test_collapse_undelivered_oversize_only_touches_new_events(
-    tmp_path, event_stream_limits
-):
-    es, _ = _stream(tmp_path, event_stream_limits)
+def test_collapse_undelivered_oversize_only_touches_new_events(tmp_path):
+    es, _ = _stream(tmp_path)
     read_before = _read_result(0, 1200)
     es.log("action_end", read_before, action_name="read_file")
     es.mark_delivered()
@@ -172,6 +170,10 @@ class _StatelessLLM:
     def reset_session_history(self, task_id, call_type):
         pass
 
+    def input_budget(self):
+        # Room to spare, so each fold keeps context.keep_recent_tokens.
+        return 1_000_000
+
     async def generate_response_async(self, system_prompt, user_prompt, **kw):
         from agent_core.core.impl.llm.interface import LLMContextOverflowError
 
@@ -183,10 +185,12 @@ class _StatelessLLM:
 
 def _router(monkeypatch, stream, llm):
     import agent_core.core.impl.action.router as router_module
+    from app import config as app_config
 
     monkeypatch.setattr(
         router_module, "get_event_stream_manager", lambda: _Manager(stream)
     )
+    monkeypatch.setattr(app_config, "get_keep_recent_tokens", lambda: KEEP_TOKENS)
     return router_module.ActionRouter(None, llm, _ContextEngine())
 
 
@@ -201,10 +205,8 @@ def _decide(router, stream):
     )
 
 
-def test_router_folds_then_collapses_new_events_that_cannot_fit(
-    tmp_path, event_stream_limits, monkeypatch
-):
-    es, summarizer = _stream(tmp_path, event_stream_limits)
+def test_router_folds_then_collapses_new_events_that_cannot_fit(tmp_path, monkeypatch):
+    es, summarizer = _stream(tmp_path)
     _history(es)
     es.mark_delivered()
     es.log("action_end", _read_result(0, 1200), action_name="read_file")
@@ -220,12 +222,10 @@ def test_router_folds_then_collapses_new_events_that_cannot_fit(
     assert all(r.delivered for r in es.tail_events)
 
 
-def test_router_gives_up_when_nothing_is_left_to_shrink(
-    tmp_path, event_stream_limits, monkeypatch
-):
+def test_router_gives_up_when_nothing_is_left_to_shrink(tmp_path, monkeypatch):
     from agent_core.core.impl.llm.interface import LLMContextOverflowError
 
-    es, _ = _stream(tmp_path, event_stream_limits)
+    es, _ = _stream(tmp_path)
     _history(es)
     es.mark_delivered()
     # Many new results, each just under the externalization threshold.
@@ -238,10 +238,8 @@ def test_router_gives_up_when_nothing_is_left_to_shrink(
     assert len(llm.sent) == 2  # refused, refused after the fold, then gave up
 
 
-def test_a_stateless_answer_marks_the_stream_delivered(
-    tmp_path, event_stream_limits, monkeypatch
-):
-    es, _ = _stream(tmp_path, event_stream_limits)
+def test_a_stateless_answer_marks_the_stream_delivered(tmp_path, monkeypatch):
+    es, _ = _stream(tmp_path)
     _history(es, 3)
     llm = _StatelessLLM()
 

@@ -285,6 +285,25 @@ class EventStreamManager:
         """
         return kind in SKIP_UNPROCESSED_EVENT_TYPES
 
+    def clear_event_log(self, session_id: str) -> None:
+        """Empty a session's EVENT.md (the session is starting over).
+
+        The agent greps EVENT.md to recover detail its context no longer
+        holds, so a cleared conversation must not stay there. Its
+        EVENT_UNPROCESSED.md is kept: those events still go to long-term
+        memory at the next memory run.
+        """
+        stream = self._streams.get(session_id)
+        if stream is None or stream.temp_dir is None:
+            return
+        with self._file_lock:
+            event_file = Path(stream.temp_dir) / "EVENT.md"
+            try:
+                if event_file.exists():
+                    event_file.write_text("", encoding="utf-8")
+            except OSError as e:
+                logger.warning(f"[EventStreamManager] Failed to clear EVENT.md: {e}")
+
     def _log_to_files(self, kind: str, message: str, temp_dir: Optional[Path]) -> None:
         """
         Append an event to the writing session's EVENT.md and (optionally)

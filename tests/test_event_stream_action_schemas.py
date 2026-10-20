@@ -20,6 +20,9 @@ from agent_core.core.impl.event_stream.event_stream import (
 )
 
 
+KEEP_TOKENS = 2000
+
+
 class _RecordingLLM:
     consecutive_failures = 0
     _max_consecutive_failures = 5
@@ -32,8 +35,7 @@ class _RecordingLLM:
         return "SUMMARY OF OLD EVENTS"
 
 
-def _stream(tmp_path, event_stream_limits, keep_recent_tokens=2000):
-    event_stream_limits(keep_recent_tokens)
+def _stream(tmp_path):
     llm = _RecordingLLM()
     return EventStream(llm=llm, temp_dir=tmp_path / "events"), llm
 
@@ -61,8 +63,8 @@ def _schema_records(es):
     return [r for r in es.tail_events if r.event.event_type is EventType.ACTION_SCHEMAS]
 
 
-def test_large_schemas_stay_inline(tmp_path, event_stream_limits):
-    es, _ = _stream(tmp_path, event_stream_limits)
+def test_large_schemas_stay_inline(tmp_path):
+    es, _ = _stream(tmp_path)
     body = "s " * MAX_EVENT_INLINE_CHARS
     _log_schemas(es, ["send_gmail"], body=body)
 
@@ -71,26 +73,26 @@ def test_large_schemas_stay_inline(tmp_path, event_stream_limits):
     assert not list((tmp_path / "events").glob("*.txt"))
 
 
-def test_a_fold_never_collapses_schemas_in_place(tmp_path, event_stream_limits):
-    es, _ = _stream(tmp_path, event_stream_limits, keep_recent_tokens=100_000)
+def test_a_fold_never_collapses_schemas_in_place(tmp_path):
+    es, _ = _stream(tmp_path)
     _fill(es, 5)
     _log_schemas(es, ["send_gmail"], body="s " * MAX_EVENT_INLINE_CHARS)
     es.mark_delivered()
 
-    es.summarize_by_LLM()
+    es.summarize_by_LLM(keep_tokens=100_000)
 
     (rec,) = _schema_records(es)
     assert len(rec.event.message) > MAX_EVENT_INLINE_CHARS
 
 
-def test_schemas_in_use_survive_a_fold(tmp_path, event_stream_limits):
-    es, llm = _stream(tmp_path, event_stream_limits)
+def test_schemas_in_use_survive_a_fold(tmp_path):
+    es, llm = _stream(tmp_path)
     _log_schemas(es, ["send_gmail", "list_gmail"])
     _fill(es, 40)
     _log_call(es, "send_gmail")  # newest: in the kept tail
     es.mark_delivered()
 
-    es.summarize_by_LLM()
+    es.summarize_by_LLM(keep_tokens=KEEP_TOKENS)
 
     assert es.head_summary == "SUMMARY OF OLD EVENTS"
     (rec,) = _schema_records(es)
@@ -100,16 +102,14 @@ def test_schemas_in_use_survive_a_fold(tmp_path, event_stream_limits):
     assert all("SCHEMA BODY" not in p for p in llm.prompts)
 
 
-def test_unused_schemas_are_dropped_unsummarized_with_a_note(
-    tmp_path, event_stream_limits
-):
-    es, llm = _stream(tmp_path, event_stream_limits)
+def test_unused_schemas_are_dropped_unsummarized_with_a_note(tmp_path):
+    es, llm = _stream(tmp_path)
     _log_schemas(es, ["post_discord"])
     _log_call(es, "post_discord")  # used, but long ago
     _fill(es, 40)
     es.mark_delivered()
 
-    es.summarize_by_LLM()
+    es.summarize_by_LLM(keep_tokens=KEEP_TOKENS)
 
     assert _schema_records(es) == []
     assert all("SCHEMA BODY" not in p for p in llm.prompts)
@@ -126,23 +126,21 @@ def test_unused_schemas_are_dropped_unsummarized_with_a_note(
     assert es._total_tokens == sum(get_cached_token_count(r) for r in es.tail_events)
 
 
-def test_only_schemas_old_enough_are_dropped_without_an_llm_call(
-    tmp_path, event_stream_limits
-):
-    es, llm = _stream(tmp_path, event_stream_limits, keep_recent_tokens=600)
+def test_only_schemas_old_enough_are_dropped_without_an_llm_call(tmp_path):
+    es, llm = _stream(tmp_path)
     _log_schemas(es, ["post_discord"], body="s " * 3000)
     _fill(es, 2)
     es.mark_delivered()
 
-    es.summarize_by_LLM()
+    es.summarize_by_LLM(keep_tokens=600)
 
     assert _schema_records(es) == []
     assert llm.prompts == []
     assert es.head_summary is None
 
 
-def test_actions_with_schemas_lists_the_live_tail(tmp_path, event_stream_limits):
-    es, _ = _stream(tmp_path, event_stream_limits)
+def test_actions_with_schemas_lists_the_live_tail(tmp_path):
+    es, _ = _stream(tmp_path)
     assert es.actions_with_schemas() == set()
     _log_schemas(es, ["send_gmail", "list_gmail"])
     _log_schemas(es, ["post_discord"])
