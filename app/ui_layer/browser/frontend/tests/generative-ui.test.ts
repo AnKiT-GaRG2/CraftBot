@@ -612,6 +612,25 @@ test('document attributes and state strings survive rendering without executing 
   await expect(page.getByRole('alert')).toHaveCount(0)
 })
 
+for (const panel of ['browser', 'closed'] as const) {
+  test(`the first incoming output opens when the panel is ${panel}`, async ({ page }) => {
+    await page.goto('/tests/generative-ui.html?empty')
+    await page.getByRole('button', { name: 'Add browser' }).click()
+    const browserButton = page.getByRole('button', { name: "Show this chat's browser", exact: true })
+    await browserButton.click()
+    await expect(page.getByRole('region', { name: 'Browser panel' })).toBeVisible()
+    if (panel === 'closed') {
+      await browserButton.click()
+      await expect(page.getByRole('region', { name: 'Browser panel' })).toHaveCount(0)
+    }
+    await expect(outputsButton(page)).toHaveCount(0)
+    await custom(page, '<p>First incoming output</p>')
+    await expect(page.getByRole('region', { name: 'Output panel' })).toBeVisible()
+    await expect(preview(page).getByText('First incoming output')).toBeVisible()
+    await expect(page.getByRole('region', { name: 'Browser panel' })).toHaveCount(0)
+  })
+}
+
 test('the browser shares the panel with outputs, one at a time', async ({ page }) => {
   await open(page)
   await page.getByRole('button', { name: 'Add browser' }).click()

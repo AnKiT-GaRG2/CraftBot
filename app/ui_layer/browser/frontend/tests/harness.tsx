@@ -23,7 +23,7 @@ const examples: Record<string, GenerativeUIArtifact> = {
   Design: { id: 'design', title: 'Design playground', html: design, revision: 1, connect_origins: [] },
 }
 function Harness() {
-  const [artifact, setArtifact] = useState(examples.Cooking)
+  const [artifact, setArtifact] = useState<GenerativeUIArtifact | null>(() => new URLSearchParams(location.search).has('empty') ? null : examples.Cooking)
   const [visible, setVisible] = useState(true)
   const [messageVisible, setMessageVisible] = useState(true)
   const [history, setHistory] = useState<GenerativeUIArtifact[]>([])
@@ -55,7 +55,8 @@ function Harness() {
       window.removeEventListener('fixture-language', changeLanguage)
     }
   }, [])
-  const messages: ChatMessage[] = [...history, artifact].map((item, index) => ({
+  const artifacts = artifact ? [...history, artifact] : history
+  const messages: ChatMessage[] = artifacts.map((item, index) => ({
     sender: 'CraftBot', content: item.title, style: 'agent', timestamp: index + 1, messageId: item.id + item.revision, sessionId,
     uiArtifact: closedKeys.has(`${item.id}:${item.revision}`)
       ? { id: item.id, title: item.title, revision: item.revision, closed: true as const }
@@ -63,7 +64,7 @@ function Harness() {
   }))
   const closeOutput = (id: string) => setClosedKeys(keys => new Set([
     ...keys,
-    ...[...history, artifact].filter(item => item.id === id).map(item => `${item.id}:${item.revision}`),
+    ...artifacts.filter(item => item.id === id).map(item => `${item.id}:${item.revision}`),
   ]))
   return <main style={{ width: '100%', height: '100dvh', display: 'flex', flexDirection: 'column', minHeight: 0, fontFamily: 'system-ui', color: 'var(--text-primary)' }}>
     <p style={{ color: 'var(--text-secondary)', fontSize: 12, textTransform: 'uppercase', letterSpacing: '.1em' }}>CraftBot · development preview</p>
@@ -74,7 +75,7 @@ function Harness() {
       <button onClick={() => setVisible(value => !value)}>{visible ? 'Leave preview' : 'Return to preview'}</button>
       <button onClick={() => setMessageVisible(value => !value)}>{messageVisible ? 'Hide message' : 'Show message'}</button>
       <button onClick={() => setSessionId(value => value === 'demo' ? 'other' : 'demo')}>Switch session</button>
-      <button onClick={() => setArtifact(value => ({ ...value, revision: value.revision + 1 }))}>Revise interface</button>
+      <button disabled={!artifact} onClick={() => setArtifact(value => value && ({ ...value, revision: value.revision + 1 }))}>Revise interface</button>
       <button onClick={() => setWithBrowser(value => !value)}>{withBrowser ? 'Remove browser' : 'Add browser'}</button>
       <button onClick={() => store.dispatch(setUiState(UI_STATE.chat.panelMode(sessionId), 'browser'))}>Agent starts browsing</button>
       <button onClick={() => setLayout(value => value === 'side' ? 'stacked' : 'side')}>{layout === 'side' ? 'Stack panel' : 'Panel beside chat'}</button>

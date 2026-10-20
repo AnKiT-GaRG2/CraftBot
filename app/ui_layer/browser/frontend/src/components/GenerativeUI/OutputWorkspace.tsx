@@ -128,7 +128,8 @@ export function OutputWorkspace({ sessionId, messages, browser, layout = 'side',
   const restoreFocus = useRef(false)
   // The output revisions already known: an incoming one is new to this set
   // (closing the newest output must not count as a new one arriving).
-  const knownOutputs = useRef<{ sessionId: string; keys: Set<string> }>({ sessionId, keys: new Set() })
+  // Null distinguishes the initial snapshot from a chat with no outputs yet.
+  const knownOutputs = useRef<{ sessionId: string; keys: Set<string> } | null>(null)
   const [controlsTarget, setControlsTarget] = useState<HTMLDivElement | null>(null)
   // Every revision still open (a closed output keeps only a marker).
   const outputs = useMemo(() => {
@@ -171,13 +172,13 @@ export function OutputWorkspace({ sessionId, messages, browser, layout = 'side',
   // the user deliberately closed.
   useEffect(() => {
     const known = knownOutputs.current
-    if (known.sessionId === sessionId && newestKey && known.keys.size > 0 && !known.keys.has(newestKey)) {
+    if (known?.sessionId === sessionId && newestKey && !known.keys.has(newestKey)) {
       captureLayout()
       setClosing(null)
       setSelection(newestKey)
       setMode('output')
     }
-    const keys = known.sessionId === sessionId ? known.keys : new Set<string>()
+    const keys = known?.sessionId === sessionId ? known.keys : new Set<string>()
     for (const artifact of outputs) keys.add(`${artifact.id}:${artifact.revision}`)
     knownOutputs.current = { sessionId, keys }
   }, [sessionId, outputs, newestKey, setSelection, setMode, captureLayout])
