@@ -1702,7 +1702,7 @@ class MiniBrowserWS:
         secret = await _vault_call(lambda vault: vault.reveal_entry(entry_id))
         try:
             # Explicit user request only: no broadcast, resource cache or logs.
-            self._adapter._send_only_to(ws, {
+            self._adapter.send_only_to(ws, {
                 "type": "mini_browser_vault_value",
                 "data": {"id": entry_id, "token": token, "value": secret.reveal()},
             })

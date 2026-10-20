@@ -1,5 +1,5 @@
 import { useTranslation } from 'react-i18next'
-import { PasswordsPanel } from '../MiniBrowser/PasswordsModal'
+import { PasswordsPanel } from '../../components/MiniBrowser/PasswordsModal'
 import styles from './SettingsPage.module.css'
 
 export function CredentialsSettings() {

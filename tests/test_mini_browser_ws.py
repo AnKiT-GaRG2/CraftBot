@@ -2504,7 +2504,7 @@ def test_reveal_transport_failures_do_not_log_the_value(env, tmp_path, monkeypat
         ws, channel = connect(env)
         def fail_send(*args):
             raise RuntimeError('transport failed with ' + PASSWORD)
-        monkeypatch.setattr(env.mb._adapter, '_send_only_to', fail_send)
+        monkeypatch.setattr(env.mb._adapter, 'send_only_to', fail_send)
         await env.mb.handle(ws, 'mini_browser_vault_reveal', {'id': entry['id'], 'token': 'request1'})
         assert PASSWORD not in ''.join(captured_logs)
         assert channel.sent == []
