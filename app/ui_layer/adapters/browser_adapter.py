@@ -6636,7 +6636,9 @@ A quick Q&A will now begin to understand your objectives to serve you better:"""
         now that the subscription credential is gone.
         """
         try:
-            success, message = disconnect_subscription(provider)
+            success, message = await asyncio.to_thread(
+                disconnect_subscription, provider
+            )
             warning = None
             if success:
                 try:

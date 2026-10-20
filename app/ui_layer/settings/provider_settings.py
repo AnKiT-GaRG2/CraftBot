@@ -231,10 +231,8 @@ def get_api_key_for_provider(provider: str) -> str:
 
 
 # ─────────────────────────────────────────────────────────────────────
-# Subscription OAuth (ChatGPT Plus/Pro/Team, SuperGrok). UI sits in the
-# model-settings panel next to the API-key field. Anthropic is intentionally
-# excluded — Pro/Max OAuth in third-party tools was forbidden by Anthropic
-# in Feb 2026, so we keep that path API-key-only.
+# Subscription OAuth. Claude subscriptions use the official Claude Code CLI
+# for both login and inference; CraftBot stores only a local connection flag.
 # ─────────────────────────────────────────────────────────────────────
 
 
@@ -257,7 +255,7 @@ def _persist_auth_mode(provider: str, mode: str) -> None:
 
 
 async def connect_subscription_async(provider: str) -> Tuple[bool, str]:
-    """Launch the subscription OAuth flow for ``provider`` (openai / grok).
+    """Launch the subscription OAuth flow (or Claude Code's own login).
 
     Opens the browser, waits for the loopback callback, persists the
     credential under ``.credentials/<provider>_oauth.json``. Async because
@@ -288,14 +286,16 @@ async def connect_subscription_async(provider: str) -> Tuple[bool, str]:
 def disconnect_subscription(provider: str) -> Tuple[bool, str]:
     """Remove the subscription credential and flip auth_mode back to api_key.
 
-    Synchronous — disconnect is just a file delete, no OAuth dance required.
+    Claude Code also signs out its CraftBot-specific CLI profile. Async
+    callers should offload this function because the CLI may take time.
     """
     try:
         from craftos_integrations.llm_oauth import tokens as _oauth_tokens
     except Exception as e:
         return False, f"Subscription OAuth backend unavailable: {e}"
     success, message = _oauth_tokens.disconnect(provider)
-    _persist_auth_mode(provider, "api_key")
+    if success:
+        _persist_auth_mode(provider, "api_key")
     return success, message
 
 
