@@ -97,7 +97,7 @@
     "aria": "来自智能体的问题",
     "asking": "{{sender}} 正在提问",
     "queuePosition": "第 1 个，共 {{total}} 个",
-    "dismissHint": "关闭。智能体将在没有答案的情况下继续。",
+    "dismissHint": "关闭并中断任务。在你发送下一条消息之前，智能体将停止。",
     "dismissAria": "关闭问题",
     "recommended": "（推荐）",
     "freeTextPlaceholder": "或输入你自己的答案…",

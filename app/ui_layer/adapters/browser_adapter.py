@@ -125,6 +125,7 @@ from app.ui_layer.components.types import (
     QUESTION_DISMISSED_VALUE,
 )
 from app.ui_layer.events import UIEvent, UIEventType
+from app.ui_layer.commands.executor import CommandExecutor
 from app.ui_layer.onboarding import OnboardingFlowController
 from app.ui_layer.metrics import MetricsCollector
 from app.ui_layer.diagnostics import LoopStallMonitor
@@ -1033,16 +1034,26 @@ class BrowserAdapter(InterfaceAdapter):
         """
         Submit a message from the user.
 
+        A message that reaches the agent (not a slash command) is also the
+        user's reply to the pinned question the box is showing, exactly as
+        if typed into the box's answer field.
+
         Args:
             message: The user's input message
             session_id: The session the message was typed in (main if omitted)
             client_id: Optional client-generated UUID for reconciling optimistic UI
         """
+        agent_text = None
+        if not CommandExecutor.handles(message):
+            agent_text = await self._answer_shown_question(
+                session_id or "main", message, message
+            )
         await self._controller.submit_message(
             message,
             self._adapter_id,
             session_id=session_id,
             client_id=client_id,
+            agent_text=agent_text,
         )
 
     async def _handle_enhance_prompt(self, data: Dict[str, Any], ws) -> None:
@@ -4299,11 +4310,10 @@ A quick Q&A will now begin to understand your objectives to serve you better:"""
             recorded = QUESTION_DISMISSED_VALUE if dismissed else value
             pending_questions: list = []
             if self._chat and message_id:
-                for m in self._chat._messages:
-                    if m.message_id == message_id:
-                        question_text = m.content
-                        m.option_selected = recorded
-                        break
+                question_text = next(
+                    (m.content for m in self._chat._messages if m.message_id == message_id),
+                    "",
+                )
                 storage = self._chat._storage
                 if storage:
 
@@ -4311,25 +4321,17 @@ A quick Q&A will now begin to understand your objectives to serve you better:"""
                         storage.update_option_selected(message_id, recorded)
                         # After marking this one, whatever question messages
                         # remain unanswered are still pinned in the user's UI.
-                        return storage.get_pending_questions(session_id)
+                        return [
+                            content
+                            for _, content in storage.get_pending_questions(session_id)
+                        ]
 
                     try:
                         pending_questions = await self._chat.run_storage(_record_answer)
                     except Exception:
                         pass
 
-            # Un-pin on every connected client (the answering client already
-            # marked the selection optimistically).
-            await self._broadcast(
-                {
-                    "type": "question_answered",
-                    "data": {
-                        "sessionId": session_id,
-                        "messageId": message_id,
-                        "value": recorded,
-                    },
-                }
-            )
+            await self._close_question(session_id, message_id, recorded)
 
             await self._controller.submit_question_answer(
                 value,
@@ -4344,6 +4346,67 @@ A quick Q&A will now begin to understand your objectives to serve you better:"""
                 f"[QUESTION_RESPONSE] Error handling question response: {e}",
                 exc_info=True,
             )
+
+    async def _answer_shown_question(
+        self, session_id: str, reply: str, agent_message: str
+    ) -> Optional[str]:
+        """Record a chat-input message as the answer to the pinned question.
+
+        The chat input works like the question box's answer field: the
+        message answers the question the box is showing (the session's
+        oldest unanswered one) and un-pins it, so the next queued question
+        moves up. Returns the agent-facing copy of `agent_message` marked as
+        that answer, or None when no question is pinned.
+        """
+        storage = self._chat._storage if self._chat else None
+        if storage is None or not reply.strip():
+            return None
+
+        def _claim() -> Optional[tuple]:
+            # Read and record in one storage-worker call, so back-to-back
+            # sends answer successive questions instead of the same one.
+            pending = storage.get_pending_questions(session_id)
+            if not pending:
+                return None
+            message_id, question = pending[0]
+            storage.update_option_selected(message_id, reply)
+            return message_id, question, [content for _, content in pending[1:]]
+
+        try:
+            claimed = await self._chat.run_storage(_claim)
+        except Exception:
+            logger.warning(
+                "[QUESTION_RESPONSE] Failed to record chat-input answer",
+                exc_info=True,
+            )
+            return None
+        if claimed is None:
+            return None
+        message_id, question, remaining = claimed
+        await self._close_question(session_id, message_id, reply)
+        return self._controller.question_answer_text(question, agent_message, remaining)
+
+    async def _close_question(
+        self, session_id: str, message_id: str, recorded: str
+    ) -> None:
+        """Un-pin a resolved question in the live buffer and on every
+        connected client (the answering client already marked the selection
+        optimistically)."""
+        if self._chat and message_id:
+            for m in self._chat._messages:
+                if m.message_id == message_id:
+                    m.option_selected = recorded
+                    break
+        await self._broadcast(
+            {
+                "type": "question_answered",
+                "data": {
+                    "sessionId": session_id,
+                    "messageId": message_id,
+                    "value": recorded,
+                },
+            }
+        )
 
     # ─────────────────────────────────────────────────────────────────────
     # Session Handlers (sidebar surface)
@@ -9506,6 +9569,13 @@ A quick Q&A will now begin to understand your objectives to serve you better:"""
 
             if not agent_context.strip():
                 return
+
+            # Also the reply to the pinned question, as in submit_message.
+            reply = content.strip() or ", ".join(a.name for a in processed_attachments)
+            agent_context = (
+                await self._answer_shown_question(session_id, reply, agent_context)
+                or agent_context
+            )
 
             # Update state and route to agent directly
             # (Skip submit_message to avoid duplicate chat message)

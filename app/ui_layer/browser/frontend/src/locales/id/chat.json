@@ -97,7 +97,7 @@
     "aria": "Pertanyaan dari agen",
     "asking": "{{sender}} sedang bertanya",
     "queuePosition": "1 dari {{total}}",
-    "dismissHint": "Tutup. Agen akan melanjutkan tanpa jawaban.",
+    "dismissHint": "Tutup dan hentikan tugas. Agen berhenti sampai pesan Anda berikutnya.",
     "dismissAria": "Tutup pertanyaan",
     "recommended": "(disarankan)",
     "freeTextPlaceholder": "Atau ketik jawaban Anda sendiri...",

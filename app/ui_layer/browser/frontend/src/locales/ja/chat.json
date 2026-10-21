@@ -97,7 +97,7 @@
     "aria": "エージェントからの質問",
     "asking": "{{sender}} が質問しています",
     "queuePosition": "{{total}} 件中 1 件目",
-    "dismissHint": "閉じる。エージェントは回答なしで続行します。",
+    "dismissHint": "閉じてタスクを中断します。次のメッセージまでエージェントは停止します。",
     "dismissAria": "質問を閉じる",
     "recommended": "(推奨)",
     "freeTextPlaceholder": "または自分の回答を入力...",

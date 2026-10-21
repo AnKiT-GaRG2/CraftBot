@@ -13,7 +13,7 @@ import logging
 import sqlite3
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, Tuple
 
 from agent_core.core.session import MAIN_SESSION_ID
 
@@ -392,26 +392,28 @@ class ChatStorage:
             conn.commit()
             return count
 
-    def get_pending_questions(self, session_id: str) -> List[str]:
+    def get_pending_questions(self, session_id: str) -> List[Tuple[str, str]]:
         """
-        Contents of a session's unanswered question messages, oldest first.
+        A session's unanswered question messages as (message_id, content),
+        oldest first.
 
         A question is pending until the user answers or dismisses it
-        (option_selected set). Used to remind the agent which of its
-        questions are still pinned in the UI so it doesn't re-ask them.
+        (option_selected set). The first one is the question the UI's box
+        is showing; the rest remind the agent which of its questions are
+        still pinned so it doesn't re-ask them.
         """
         with sqlite3.connect(self._db_path) as conn:
             cursor = conn.cursor()
             cursor.execute(
                 """
-                SELECT content FROM chat_messages
+                SELECT message_id, content FROM chat_messages
                 WHERE session_id = ? AND is_question = 1
                   AND (option_selected IS NULL OR option_selected = '')
                 ORDER BY timestamp ASC
             """,
                 (session_id,),
             )
-            return [row[0] for row in cursor.fetchall()]
+            return [(row[0], row[1]) for row in cursor.fetchall()]
 
     def update_option_selected(self, message_id: str, option_value: str) -> bool:
         """

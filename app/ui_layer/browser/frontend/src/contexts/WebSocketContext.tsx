@@ -21,7 +21,7 @@ import {
   transferSession as messagesTransferSession,
 } from '../store/slices/messagesSlice'
 import { transferDraft as chatInputTransferDraft } from '../store/slices/chatInputSlice'
-import { selectLastMessageIdBySession } from '../store/selectors/messages'
+import { selectLastMessageIdBySession, selectPendingQuestions } from '../store/selectors/messages'
 import { setLoading as onboardingSetLoading } from '../store/slices/onboardingSlice'
 import {
   markChecking as localLlmMarkChecking,
@@ -343,6 +343,19 @@ export function WebSocketProvider({ children }: { children: ReactNode }) {
         pending: true,
       }
       dispatch(messagesAddOptimistic(optimistic))
+
+      // The chat input works like the question box's answer field: this
+      // message answers the pinned question the box is showing, so un-pin
+      // it now and let the next queued one move up. The server records the
+      // same answer and broadcasts question_answered to every client.
+      const shown = selectPendingQuestions(store.getState(), sessionId)[0]
+      if (shown) {
+        dispatch(messagesMarkOptionSelected({
+          sessionId,
+          messageId: shown.messageId,
+          value: content.trim() || (attachments || []).map(att => att.name).join(', '),
+        }))
+      }
     }
 
     sendOrQueue(JSON.stringify({
@@ -357,7 +370,7 @@ export function WebSocketProvider({ children }: { children: ReactNode }) {
       clientId,
       ...draftReasoning(sessionId),
     }))
-  }, [sendOrQueue, dispatch, draftReasoning])
+  }, [sendOrQueue, dispatch, draftReasoning, store])
 
   const sendCommand = useCallback((command: string, sessionId: string) => {
     const clientId = newClientId()
@@ -470,7 +483,8 @@ export function WebSocketProvider({ children }: { children: ReactNode }) {
   // Answer (or dismiss) a pinned agent question. Optimistically records the
   // selection — which un-pins the box instantly — then round-trips through
   // the backend, which paints the answer as a user bubble and hands it to
-  // the agent as a regular user-message trigger.
+  // the agent as a regular user-message trigger. A dismissal interrupts the
+  // task instead: the backend posts a system message and wakes no one.
   const sendQuestionAnswer = useCallback((
     messageId: string,
     value: string,

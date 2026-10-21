@@ -97,7 +97,7 @@
     "aria": "來自代理的問題",
     "asking": "{{sender}} 正在詢問",
     "queuePosition": "第 1 個，共 {{total}} 個",
-    "dismissHint": "關閉。代理將在沒有回答的情況下繼續進行。",
+    "dismissHint": "關閉並中斷任務。在你傳送下一則訊息之前，代理將停止。",
     "dismissAria": "關閉問題",
     "recommended": "（建議）",
     "freeTextPlaceholder": "或輸入你自己的回答…",

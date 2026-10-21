@@ -97,7 +97,7 @@
     "aria": "에이전트의 질문",
     "asking": "{{sender}}이(가) 묻습니다",
     "queuePosition": "{{total}}개 중 1번째",
-    "dismissHint": "닫기. 에이전트가 답변 없이 진행합니다.",
+    "dismissHint": "닫고 작업을 중단합니다. 다음 메시지를 보낼 때까지 에이전트가 멈춥니다.",
     "dismissAria": "질문 닫기",
     "recommended": "(권장)",
     "freeTextPlaceholder": "또는 직접 답변을 입력하세요...",

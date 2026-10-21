@@ -97,7 +97,7 @@
     "aria": "Pregunta del agente",
     "asking": "{{sender}} está preguntando",
     "queuePosition": "1 de {{total}}",
-    "dismissHint": "Descartar. El agente continuará sin respuesta.",
+    "dismissHint": "Descartar e interrumpir la tarea. El agente se detiene hasta tu próximo mensaje.",
     "dismissAria": "Descartar pregunta",
     "recommended": "(recomendado)",
     "freeTextPlaceholder": "O escribe tu propia respuesta...",

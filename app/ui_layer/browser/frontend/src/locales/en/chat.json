@@ -131,7 +131,7 @@
     "aria": "Question from agent",
     "asking": "{{sender}} is asking",
     "queuePosition": "1 of {{total}}",
-    "dismissHint": "Dismiss. The agent will proceed without an answer.",
+    "dismissHint": "Dismiss and interrupt the task. The agent stops until your next message.",
     "dismissAria": "Dismiss question",
     "recommended": "(recommended)",
     "freeTextPlaceholder": "Or type your own answer...",
