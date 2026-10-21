@@ -209,7 +209,65 @@ class ChatStorage:
                 ON chat_messages(session_id, timestamp)
             """)
 
+            # Read receipts must outlive a browser process crash. Keep them
+            # beside the messages rather than relying on browser disk flushes.
+            cursor.execute("""
+                CREATE TABLE IF NOT EXISTS chat_session_reads (
+                    session_id TEXT PRIMARY KEY,
+                    message_id TEXT NOT NULL,
+                    message_timestamp REAL NOT NULL,
+                    message_row_id INTEGER NOT NULL
+                )
+            """)
+
             conn.commit()
+
+    def get_last_seen_message_ids(self) -> Dict[str, str]:
+        """Durable read markers for this single-user CraftBot instance."""
+        with sqlite3.connect(self._db_path) as conn:
+            return dict(
+                conn.execute("""
+                SELECT r.session_id, r.message_id FROM chat_session_reads r
+                JOIN chat_messages m ON m.message_id = r.message_id
+                    AND m.session_id = r.session_id
+            """)
+            )
+
+    def mark_session_seen(self, session_id: str, message_id: str) -> Optional[str]:
+        """Commit a read receipt, ignoring unknown IDs and older receipts.
+
+        Return the committed marker so delayed requests from another window
+        cannot move the browser's read position backwards.
+        """
+        with sqlite3.connect(self._db_path) as conn:
+            message = conn.execute(
+                "SELECT timestamp, id FROM chat_messages "
+                "WHERE session_id = ? AND message_id = ?",
+                (session_id, message_id),
+            ).fetchone()
+            if message is None:
+                return None
+            conn.execute(
+                """
+                INSERT INTO chat_session_reads
+                    (session_id, message_id, message_timestamp, message_row_id)
+                VALUES (?, ?, ?, ?)
+                ON CONFLICT(session_id) DO UPDATE SET
+                    message_id = excluded.message_id,
+                    message_timestamp = excluded.message_timestamp,
+                    message_row_id = excluded.message_row_id
+                WHERE excluded.message_timestamp > chat_session_reads.message_timestamp
+                   OR (excluded.message_timestamp = chat_session_reads.message_timestamp
+                       AND excluded.message_row_id > chat_session_reads.message_row_id)
+            """,
+                (session_id, message_id, *message),
+            )
+            seen = conn.execute(
+                "SELECT message_id FROM chat_session_reads WHERE session_id = ?",
+                (session_id,),
+            ).fetchone()[0]
+            conn.commit()
+            return seen
 
     def insert_message(self, message: StoredChatMessage) -> int:
         """
@@ -385,10 +443,14 @@ class ChatStorage:
                 cursor.execute(
                     "DELETE FROM chat_messages WHERE session_id = ?", (session_id,)
                 )
+                cursor.execute(
+                    "DELETE FROM chat_session_reads WHERE session_id = ?", (session_id,)
+                )
             else:
                 cursor.execute("SELECT COUNT(*) FROM chat_messages")
                 count = cursor.fetchone()[0]
                 cursor.execute("DELETE FROM chat_messages")
+                cursor.execute("DELETE FROM chat_session_reads")
             conn.commit()
             return count
 

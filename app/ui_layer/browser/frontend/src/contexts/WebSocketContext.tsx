@@ -438,8 +438,8 @@ export function WebSocketProvider({ children }: { children: ReactNode }) {
     }))
   }, [dispatch])
 
-  // Mark a session's newest message as seen (unread-dot bookkeeping). Stored
-  // as persisted UI state, so it survives reloads and syncs across tabs.
+  // Update the dot immediately, then commit the marker on the backend so
+  // a browser crash cannot undo it before Chrome flushes localStorage.
   const markSessionSeen = useCallback((sessionId: string) => {
     const current = store.getState()
     const lastId = selectLastMessageIdBySession(current)[sessionId]
@@ -447,6 +447,7 @@ export function WebSocketProvider({ children }: { children: ReactNode }) {
     const seen = selectUiState(current, UI_STATE.chat.lastSeenMessageIds)
     if (seen[sessionId] === lastId) return
     dispatch(setUiState(UI_STATE.chat.lastSeenMessageIds, { ...seen, [sessionId]: lastId }))
+    client.sendString(JSON.stringify({ type: 'session_seen', sessionId, messageId: lastId }))
   }, [dispatch, store])
 
   const enhancePrompt = useCallback((content: string, sessionId: string) => {
