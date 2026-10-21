@@ -182,6 +182,7 @@ export type WSMessageType =
   | 'session_updated'
   | 'session_deleted'
   | 'session_cleared'
+  | 'session_seen'
   | 'generative_ui_close'
   | 'generative_ui_closed'
   | 'session_busy'

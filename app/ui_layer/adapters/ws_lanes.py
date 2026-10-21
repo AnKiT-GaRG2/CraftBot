@@ -26,6 +26,7 @@ _SESSION_TYPES = frozenset(
         "session_delete",
         "session_rename",
         "session_clear",
+        "session_seen",
         "chat_history",
         "chat_attachment_upload",
         "option_click",

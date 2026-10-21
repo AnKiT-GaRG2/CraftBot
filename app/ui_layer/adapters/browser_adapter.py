@@ -1640,6 +1640,9 @@ A quick Q&A will now begin to understand your objectives to serve you better:"""
         elif msg_type == "session_clear":
             await self._handle_session_clear(data)
 
+        elif msg_type == "session_seen":
+            await self._handle_session_seen(data)
+
         elif msg_type == "generative_ui_close":
             await self._handle_generative_ui_close(data)
 
@@ -4614,6 +4617,26 @@ A quick Q&A will now begin to understand your objectives to serve you better:"""
                 "data": {"sessionId": session_id, "artifactId": artifact_id},
             }
         )
+
+    async def _handle_session_seen(self, data: Dict[str, Any]) -> None:
+        """Acknowledge read status only after its SQLite transaction commits."""
+        session_id = data.get("sessionId")
+        message_id = data.get("messageId")
+        if not isinstance(session_id, str) or not isinstance(message_id, str):
+            return
+        storage = self._chat._storage
+        if storage is None:
+            return
+        seen = await self._chat.run_storage(
+            storage.mark_session_seen, session_id, message_id
+        )
+        if seen is not None:
+            await self._broadcast(
+                {
+                    "type": "session_seen",
+                    "data": {"sessionId": session_id, "messageId": seen},
+                }
+            )
 
     async def _handle_session_list(self, ws=None) -> None:
         """Send the current session list."""
@@ -10154,6 +10177,11 @@ A quick Q&A will now begin to understand your objectives to serve you better:"""
             # older history through chat_history. ChatMessage.to_dict() always
             # carries sessionId.
             "messages": [m.to_dict() for m in self._chat.get_recent_messages()],
+            "lastSeenMessageIds": (
+                self._chat._storage.get_last_seen_message_ids()
+                if self._chat._storage is not None
+                else {}
+            ),
             # Recent activity items (per-session inline feed); each carries sessionId.
             "actions": [
                 BrowserActionPanelComponent._item_payload(a)

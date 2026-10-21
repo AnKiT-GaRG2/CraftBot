@@ -184,10 +184,8 @@ export function NavBar({ collapsed = false, onToggleCollapsed }: NavBarProps) {
     renameSession,
     clearSession,
   } = useWebSocket()
-  // Both lists follow the user's drag-and-drop order. Items created since the
-  // last reorder land where they always have: new apps last, new chats first.
+  // Apps retain their saved drag-and-drop order; chats follow latest activity.
   const [agentAppOrder, setAgentAppOrder] = usePersistedState(UI_STATE.nav.agentAppOrder)
-  const [chatOrder, setChatOrder] = usePersistedState(UI_STATE.nav.chatOrder)
   const unorderedAgentAppProjects = useAppSelector(selectAgentAppProjects)
   const agentAppProjects = useMemo(
     () => applySavedOrder(unorderedAgentAppProjects, agentAppOrder, p => p.id, 'last'),
@@ -204,11 +202,7 @@ export function NavBar({ collapsed = false, onToggleCollapsed }: NavBarProps) {
   const [agentDelete, setAgentDelete] = useState<{ id: string; name: string } | null>(null)
 
   const mainSession = useAppSelector(selectMainSession)
-  const unorderedChatSessions = useAppSelector(selectChatSessions)
-  const chatSessions = useMemo(
-    () => applySavedOrder(unorderedChatSessions, chatOrder, s => s.id, 'first'),
-    [unorderedChatSessions, chatOrder],
-  )
+  const chatSessions = useAppSelector(selectChatSessions)
   const lastMessageIdBySession = useAppSelector(selectLastMessageIdBySession)
   const runStateBySession = useAppSelector(state => state.agent.runStateBySession)
 
@@ -296,8 +290,8 @@ export function NavBar({ collapsed = false, onToggleCollapsed }: NavBarProps) {
     : agentAppProjects.slice(0, GROUP_PREVIEW_COUNT)
   const visibleChatSessions = chatSessions.slice(0, chatVisibleCount)
 
-  // Drag-to-reorder within each group. The rendered rows are always a prefix
-  // of the full list ("Show more" / scroll pagination), so the reordered
+  // Drag-to-reorder apps. The rendered rows are always a prefix
+  // of the full list ("Show more"), so the reordered
   // prefix followed by the untouched tail is the new full order.
   const withTail = (prefix: string[], all: string[]) => {
     const moved = new Set(prefix)
@@ -306,11 +300,6 @@ export function NavBar({ collapsed = false, onToggleCollapsed }: NavBarProps) {
   const agentAppSortable = useSortableList({
     ids: visibleAgentAppProjects.map(p => p.id),
     onReorder: ids => setAgentAppOrder(withTail(ids, agentAppProjects.map(p => p.id))),
-    scrollRef,
-  })
-  const chatSortable = useSortableList({
-    ids: visibleChatSessions.map(s => s.id),
-    onReorder: ids => setChatOrder(withTail(ids, chatSessions.map(s => s.id))),
     scrollRef,
   })
 
@@ -567,16 +556,10 @@ export function NavBar({ collapsed = false, onToggleCollapsed }: NavBarProps) {
     const path = sessionPath(session.id)
     const active = isActive(path)
     const renaming = renamingId === session.id
-    // Main stays pinned first; every other chat can be dragged.
-    const sortable = opts.isMain ? null : chatSortable
-    const dragging = chatSortable.draggingId === session.id
-
     return (
       <div
         key={session.id}
-        ref={sortable?.rowRef(session.id)}
-        style={sortable?.rowStyle(session.id)}
-        className={`${styles.sessionRow} ${active ? styles.sessionRowActive : ''} ${opts.isMain ? styles.sessionRowMain : ''} ${dragging ? styles.rowDragging : ''}`}
+        className={`${styles.sessionRow} ${active ? styles.sessionRowActive : ''} ${opts.isMain ? styles.sessionRowMain : ''}`}
         title={opts.isMain ? t('nav:items.main') : session.title}
         {...(opts.isMain ? tourAnchorProps('nav-main-session') : {})}
       >
@@ -598,7 +581,6 @@ export function NavBar({ collapsed = false, onToggleCollapsed }: NavBarProps) {
               className={styles.sessionRowButton}
               onClick={() => navigate(path)}
               title={opts.isMain ? t('nav:items.main') : session.title}
-              {...sortable?.handleProps(session.id)}
             >
               <span className={styles.icon}>
                 {opts.isMain ? <MessageSquare size={16} /> : <MessageCircle size={14} />}

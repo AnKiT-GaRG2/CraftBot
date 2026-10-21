@@ -25,6 +25,7 @@ import miniBrowserReducer from './slices/miniBrowserSlice'
 import uiReducer from './slices/uiSlice'
 import { socketMiddleware } from './socket/socketMiddleware'
 import './socket/versionWatch'
+import './socket/readReceipts'
 import { createUiPersistenceMiddleware, loadPersistedUiState } from './uiState'
 
 // Redux Toolkit's development-only safety checks walk the state on every
