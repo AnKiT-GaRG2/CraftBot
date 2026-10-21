@@ -6107,7 +6107,8 @@ A quick Q&A will now begin to understand your objectives to serve you better:"""
     async def _handle_model_settings_get(self) -> None:
         """Get current model settings."""
         try:
-            result = get_model_settings()
+            # Includes subscription status, which runs the Claude CLI.
+            result = await asyncio.to_thread(get_model_settings)
             await self._broadcast(
                 {
                     "type": "model_settings_get",
@@ -6572,7 +6573,8 @@ A quick Q&A will now begin to understand your objectives to serve you better:"""
         try:
             success, message = await connect_subscription_async(provider)
             active_provider = self._activate_provider_via_settings(success, provider)
-            status_payload = get_subscription_status(provider)
+            # Claude's status runs its CLI, so keep it off the event loop.
+            status_payload = await asyncio.to_thread(get_subscription_status, provider)
             await self._broadcast(
                 {
                     "type": "model_subscription_connect",
@@ -6669,7 +6671,9 @@ A quick Q&A will now begin to understand your objectives to serve you better:"""
                         "provider": provider,
                         "message": message,
                         "warning": warning,
-                        "status": get_subscription_status(provider),
+                        "status": await asyncio.to_thread(
+                            get_subscription_status, provider
+                        ),
                     },
                 }
             )
@@ -6689,7 +6693,7 @@ A quick Q&A will now begin to understand your objectives to serve you better:"""
     async def _handle_model_subscription_status(self, provider: str) -> None:
         """Return current connection status for a given provider."""
         try:
-            status_payload = get_subscription_status(provider)
+            status_payload = await asyncio.to_thread(get_subscription_status, provider)
             await self._broadcast(
                 {
                     "type": "model_subscription_status",
@@ -6764,7 +6768,9 @@ A quick Q&A will now begin to understand your objectives to serve you better:"""
                         "success": success,
                         "provider": provider,
                         "message": message,
-                        "status": get_subscription_status(provider),
+                        "status": await asyncio.to_thread(
+                            get_subscription_status, provider
+                        ),
                         "active_provider": active_provider,
                     },
                 }

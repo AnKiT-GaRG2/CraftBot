@@ -2,7 +2,11 @@
 
 import asyncio
 import json
+import queue
 import subprocess
+import threading
+import webbrowser
+from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -14,10 +18,97 @@ from agent_core.core.models.claude_code_client import ClaudeCodeClient
 from agent_core.core.models.factory import ModelFactory
 from agent_core.core.models.types import InterfaceType
 
-
 @pytest.fixture(autouse=True)
 def isolated_connection(tmp_path, monkeypatch):
     monkeypatch.setattr(ConfigStore, "project_root", tmp_path)
+    monkeypatch.setattr(claude_code, "_login_process", None)
+    # Never find the real CLI installed on the test machine.
+    monkeypatch.setattr(claude_code, "_native_install", lambda: tmp_path / "no-claude")
+
+
+@pytest.fixture(autouse=True)
+def opened(monkeypatch):
+    pages = []
+    monkeypatch.setattr(webbrowser, "open", pages.append)
+    return pages
+
+
+class FakeLogin:
+    """`claude auth login` without a terminal: opens its own browser tab and
+    exits once the user approves there, with one code exchange."""
+
+    def __init__(self, args, *, env, outcome="approve", on_success=None, **kwargs):
+        self.args, self.env, self.on_success = args, env, on_success
+        self.lines = queue.Queue()
+        self.received = []
+        self.returncode = None
+        self.exited = threading.Event()
+        self.stdout = SimpleNamespace(readline=self.lines.get)
+        self.stdin = SimpleNamespace(write=self.received.append, flush=lambda: None)
+        self.lines.put(b"Opening browser to sign in\n")
+        if outcome == "approve":
+            threading.Timer(0.05, self._approve).start()
+        elif outcome == "reject":
+            threading.Timer(0.05, self._reject).start()
+
+    def _approve(self):
+        if self.on_success:
+            self.on_success()
+        self._exit(0, "Login successful.")
+
+    def _reject(self):
+        self._exit(
+            1,
+            "Paste code here if prompted > Login failed: "
+            "Request failed with status code 400",
+        )
+
+    def _exit(self, code, line):
+        if self.returncode is not None:
+            return
+        self.lines.put(line.encode() + b"\n")
+        self.lines.put(b"")
+        self.returncode = code
+        self.exited.set()
+
+    def poll(self):
+        return self.returncode
+
+    def wait(self, timeout=None):
+        if not self.exited.wait(timeout):
+            raise subprocess.TimeoutExpired("claude", timeout)
+        return self.returncode
+
+    def kill(self):
+        self._exit(1, "")
+
+
+def fake_cli(monkeypatch, **behaviour):
+    launched = []
+
+    def popen(args, **kwargs):
+        launched.append(FakeLogin(args, **kwargs, **behaviour))
+        return launched[-1]
+
+    monkeypatch.setattr(claude_code, "cli_command", lambda: ["claude"])
+    monkeypatch.setattr(claude_code.subprocess, "Popen", popen)
+    return launched
+
+
+def claude_account(monkeypatch):
+    """A private profile that is signed out until the CLI's tab is approved.
+    Returns the hook that signs it in."""
+    state = {"signed_in": False}
+    monkeypatch.setattr(
+        claude_code,
+        "auth_status",
+        lambda: (
+            {"connected": True, "email": "user@example.com", "plan": "max"}
+            if state["signed_in"]
+            else {"connected": False, "error": "Use Connect"}
+        ),
+    )
+    return lambda: state.update(signed_in=True)
 
 
 def connected(monkeypatch):
@@ -85,39 +176,109 @@ def test_auth_status_rejects_non_subscription_auth(monkeypatch, method):
     assert not claude_code.auth_status()["connected"]
 
 
-def test_failed_login_does_not_enable_subscription(monkeypatch):
-    monkeypatch.setattr(claude_code, "auth_status", lambda: {"connected": False})
+def test_connect_adopts_an_existing_private_sign_in_without_a_browser(monkeypatch):
     monkeypatch.setattr(
-        claude_code, "run_cli", lambda *a, **k: SimpleNamespace(returncode=1)
+        claude_code, "auth_status", lambda: {"connected": True, "email": "a@b.c"}
     )
-    assert not asyncio.run(tokens.connect("anthropic"))[0]
-    assert not tokens.has_credential("anthropic")
-
-
-def test_browser_login_uses_cli_then_checks_account(monkeypatch):
-    states = iter([{"connected": False}, {"connected": True}])
-    monkeypatch.setattr(claude_code, "auth_status", lambda: next(states))
-    calls = []
-
-    def run(args, **kwargs):
-        calls.append(args)
-        return SimpleNamespace(returncode=0)
-
-    monkeypatch.setattr(claude_code, "run_cli", run)
+    monkeypatch.setattr(
+        claude_code.subprocess, "Popen", lambda *a, **k: pytest.fail("No login")
+    )
     assert asyncio.run(tokens.connect("anthropic"))[0]
-    assert calls == [["auth", "login"]]
+    assert tokens.has_credential("anthropic")
 
 
-def test_login_timeout_is_actionable_and_does_not_enable(monkeypatch):
-    monkeypatch.setattr(claude_code, "auth_status", lambda: {"connected": False})
+def test_connect_waits_for_approval_in_the_cli_tab(monkeypatch, opened):
+    launched = fake_cli(monkeypatch, on_success=claude_account(monkeypatch))
+    ok, message = asyncio.run(tokens.connect("anthropic"))
+    assert ok and "user@example.com" in message
+    login = launched[0]
+    assert login.args == ["claude", "auth", "login", "--claudeai"]
+    assert login.env["CLAUDE_CONFIG_DIR"] == str(claude_code.profile_directory())
+    # The CLI opens the only tab, and no code passes through CraftBot.
+    assert opened == [] and login.received == []
+    assert tokens.has_credential("anthropic")
 
-    def timeout(*args, **kwargs):
-        raise subprocess.TimeoutExpired("claude", 300)
 
-    monkeypatch.setattr(claude_code, "run_cli", timeout)
-    success, message = asyncio.run(tokens.connect("anthropic"))
-    assert not success and "timed out" in message
+def test_failed_approval_is_reported_and_does_not_connect(monkeypatch):
+    claude_account(monkeypatch)
+    fake_cli(monkeypatch, outcome="reject")
+    ok, message = asyncio.run(tokens.connect("anthropic"))
+    assert not ok and "Login failed: Request failed" in message
+    assert "Paste code here" not in message
     assert not tokens.has_credential("anthropic")
+
+
+def test_abandoned_sign_in_times_out(monkeypatch):
+    claude_account(monkeypatch)
+    launched = fake_cli(monkeypatch, outcome="abandon")
+    monkeypatch.setattr(claude_code, "LOGIN_TIMEOUT_SECONDS", 0.2)
+    ok, message = asyncio.run(tokens.connect("anthropic"))
+    assert not ok and "timed out" in message
+    assert launched[0].returncode is not None
+    assert not tokens.has_credential("anthropic")
+
+
+def test_new_connect_replaces_an_abandoned_sign_in(monkeypatch):
+    signed_in = claude_account(monkeypatch)
+    outcomes = iter(["abandon", "approve"])
+    launched = []
+
+    def popen(args, **kwargs):
+        launched.append(
+            FakeLogin(args, **kwargs, outcome=next(outcomes), on_success=signed_in)
+        )
+        return launched[-1]
+
+    monkeypatch.setattr(claude_code, "cli_command", lambda: ["claude"])
+    monkeypatch.setattr(claude_code.subprocess, "Popen", popen)
+    with ThreadPoolExecutor() as pool:
+        first = pool.submit(asyncio.run, tokens.connect("anthropic"))
+        while claude_code._login_process is None:
+            threading.Event().wait(0.01)
+        ok, _ = asyncio.run(tokens.connect("anthropic"))
+        assert ok
+        ok, message = first.result(timeout=5)
+    assert not ok and "replaced" in message
+    assert tokens.has_credential("anthropic")
+
+
+def test_cli_that_cannot_start_says_why(monkeypatch):
+    claude_account(monkeypatch)
+    monkeypatch.setattr(claude_code, "cli_command", lambda: ["claude"])
+
+    def blocked(*args, **kwargs):
+        raise OSError("blocked by policy")
+
+    monkeypatch.setattr(claude_code.subprocess, "Popen", blocked)
+    ok, message = asyncio.run(tokens.connect("anthropic"))
+    assert not ok and "blocked by policy" in message
+
+
+def test_settings_connect_button_flips_to_connected(monkeypatch):
+    from app.ui_layer.adapters.browser_adapter import BrowserAdapter
+    from app.ui_layer.settings import provider_settings
+
+    fake_cli(monkeypatch, on_success=claude_account(monkeypatch))
+    modes = []
+    monkeypatch.setattr(
+        provider_settings, "_persist_auth_mode", lambda *args: modes.append(args)
+    )
+    adapter = object.__new__(BrowserAdapter)
+    sent = []
+
+    async def broadcast(message):
+        sent.append(message)
+
+    adapter._broadcast = broadcast
+    adapter._activate_provider_via_settings = lambda ok, provider: (
+        provider if ok else None
+    )
+    asyncio.run(adapter._handle_model_subscription_connect("anthropic"))
+    assert [m["type"] for m in sent] == ["model_subscription_connect"]
+    result = sent[0]["data"]
+    assert result["success"] and result["active_provider"] == "anthropic"
+    assert result["status"]["connected"]
+    assert modes == [("anthropic", "subscription")]
 
 
 def test_inherited_api_auth_and_nested_session_do_not_override_subscription(
@@ -308,6 +469,14 @@ def test_missing_cli_has_install_instructions(monkeypatch):
     assert not success and "Install" in message
 
 
+def test_native_install_is_used_when_app_path_is_stale(monkeypatch, tmp_path):
+    native = tmp_path / "claude.exe"
+    native.write_text("")
+    monkeypatch.setattr(claude_code.shutil, "which", lambda name: None)
+    monkeypatch.setattr(claude_code, "_native_install", lambda: native)
+    assert claude_code.cli_command() == [str(native)]
+
+
 def test_status_detects_cli_logout_without_exporting_tokens(monkeypatch):
     connected(monkeypatch)
     monkeypatch.setattr(
@@ -387,37 +556,26 @@ def test_failed_logout_keeps_connection_and_auth_mode(monkeypatch, failure):
     assert modes == []
 
 
-def test_reconnect_after_logout_starts_new_login(monkeypatch):
-    calls = []
+def test_reconnect_after_logout_needs_a_new_sign_in(monkeypatch):
     logged_in = False
+
+    def signed_in():
+        nonlocal logged_in
+        logged_in = True
 
     def cli(args, **kwargs):
         nonlocal logged_in
-        calls.append(args)
-        if args == ["auth", "login"]:
-            logged_in = True
-        elif args == ["auth", "logout"]:
+        if args == ["auth", "logout"]:
             logged_in = False
         return SimpleNamespace(
             returncode=0,
-            stdout=json.dumps(
-                {
-                    "loggedIn": logged_in,
-                    "authMethod": "claude.ai",
-                }
-            ),
+            stdout=json.dumps({"loggedIn": logged_in, "authMethod": "claude.ai"}),
         )
 
+    launched = fake_cli(monkeypatch, on_success=signed_in)
     monkeypatch.setattr(claude_code, "run_cli", cli)
-    assert asyncio.run(tokens.connect("anthropic"))[0]
-    assert tokens.disconnect("anthropic")[0]
-    assert not tokens.has_credential("anthropic")
-    assert asyncio.run(tokens.connect("anthropic"))[0]
-    assert calls.count(["auth", "login"]) == 2
-
-
-def test_manual_login_command_targets_craftbot_profile():
-    command = claude_code.login_command()
-    assert "CLAUDE_CONFIG_DIR" in command
-    assert "claude auth login" in command
-    assert "claude_code" in command
+    for _ in range(2):
+        assert asyncio.run(tokens.connect("anthropic"))[0]
+        assert tokens.disconnect("anthropic")[0]
+        assert not tokens.has_credential("anthropic")
+    assert len(launched) == 2

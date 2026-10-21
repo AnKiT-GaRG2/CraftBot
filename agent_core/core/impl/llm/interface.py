@@ -208,6 +208,19 @@ def _generic_empty_response_detail(provider: str, model: str) -> str:
     )
 
 
+def _subscription_connected(provider: Optional[str]) -> bool:
+    """Whether a ChatGPT, SuperGrok or Claude subscription is connected for
+    ``provider``. The factory prefers it over an API key."""
+    if not provider:
+        return False
+    try:
+        from craftos_integrations.llm_oauth.tokens import has_credential
+
+        return has_credential(provider)
+    except Exception:
+        return False
+
+
 class LLMInterface:
     """LLM interface with multi-provider support and hook-based customization.
 
@@ -257,6 +270,7 @@ class LLMInterface:
         # whether a Settings save actually changed anything.
         self._init_api_key = api_key
         self._init_base_url = base_url
+        self._init_subscription = False
 
         # Hooks for runtime-specific behavior
         self._get_token_count = get_token_count or (lambda: 0)
@@ -332,6 +346,7 @@ class LLMInterface:
         # OpenAI, which translates chat.completions calls to the Responses
         # API on the fly — no behavioral difference at the call sites.
         self._auth_mode: str = ctx.get("auth_mode", "api_key")
+        self._init_subscription = _subscription_connected(self.provider)
         if self.provider == "openai" and self._auth_mode == "subscription":
             logger.info(
                 "[LLM] OpenAI ChatGPT subscription mode active — routing via"
@@ -456,12 +471,16 @@ class LLMInterface:
         old_api_key = self._init_api_key
         old_base_url = self._init_base_url
         provider_unchanged = target_provider == old_provider
+        # Connecting or disconnecting a subscription changes the client the
+        # factory builds even though the settings above stay the same.
+        target_subscription = _subscription_connected(target_provider)
         nothing_changed = (
             provider_unchanged
             and target_model is not None
             and target_model == old_model
             and target_api_key == old_api_key
             and target_base_url == old_base_url
+            and target_subscription == self._init_subscription
         )
 
         if nothing_changed:
@@ -546,6 +565,7 @@ class LLMInterface:
             # can tell whether anything actually changed.
             self._init_api_key = target_api_key
             self._init_base_url = target_base_url
+            self._init_subscription = target_subscription
 
             logger.info(
                 f"[LLM] Reinitialized successfully with provider: {self.provider}, model: {self.model}"

@@ -3,6 +3,12 @@
 CraftBot stores a versioned opt-in flag. Claude Code owns login, tokens and
 refresh inside CraftBot's private CLI config directory. The standalone CLI
 login is never read, copied or signed out.
+
+Sign-in works like ChatGPT's: ``claude auth login`` opens one browser tab,
+approving there redirects to the CLI's local callback, and the CLI exchanges
+the code with its own PKCE verifier and stores the tokens. CraftBot only
+waits for the CLI to finish, so it never holds anything it could use to
+authenticate.
 """
 
 from __future__ import annotations
@@ -10,12 +16,13 @@ from __future__ import annotations
 import asyncio
 import json
 import os
-import shlex
+import re
 import shutil
 import subprocess
+import threading
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, Dict, Tuple
+from typing import Any, Dict, List, Optional, Tuple
 
 from ..config import ConfigStore
 from ..credentials_store import load_credential, remove_credential, save_credential
@@ -26,6 +33,9 @@ INSTALL_MESSAGE = (
     "Claude Code CLI is required. Install it from "
     "https://code.claude.com/docs/en/setup, then connect again."
 )
+# How long Connect waits for the user to approve in the browser.
+LOGIN_TIMEOUT_SECONDS = 5 * 60
+_PASTE_PROMPT = re.compile(r"^.*Paste code here if prompted\s*>\s*")
 
 
 @dataclass
@@ -43,21 +53,17 @@ def profile_directory() -> Path:
     return path
 
 
-def login_command() -> str:
-    """Manual recovery command targeting the same profile as the app."""
-    path = str(profile_directory())
-    if os.name == "nt":
-        return (
-            "$env:CLAUDE_CONFIG_DIR = '"
-            + path.replace("'", "''")
-            + "'; claude auth login"
-        )
-    return f"CLAUDE_CONFIG_DIR={shlex.quote(path)} claude auth login"
+def _native_install() -> Path:
+    """Where the native installer puts ``claude``. An app started before the
+    install still has the old PATH, so this location is checked as well."""
+    return Path.home() / ".local" / "bin" / ("claude.exe" if os.name == "nt" else "claude")
 
 
 def cli_command() -> list[str]:
     """Resolve a native CLI or npm entrypoint without passing through a shell."""
     command = shutil.which("claude")
+    if not command and _native_install().is_file():
+        command = str(_native_install())
     if not command:
         raise RuntimeError(INSTALL_MESSAGE)
     path = Path(command)
@@ -163,37 +169,90 @@ def status() -> Dict[str, Any]:
     return {"supported": True, **auth_status()}
 
 
-def _login() -> Tuple[bool, str]:
-    current = auth_status()
-    if not current["connected"]:
-        try:
-            result = run_cli(["auth", "login"], timeout=300)
-        except subprocess.TimeoutExpired:
-            return (
-                False,
-                f"Claude sign-in timed out. Retry Connect, or run: {login_command()}",
-            )
-        except (OSError, RuntimeError):
-            return False, INSTALL_MESSAGE
-        if result.returncode:
-            return (
-                False,
-                f"Claude sign-in failed. Retry Connect, or run: {login_command()}",
-            )
-        current = auth_status()
+def _save_connection(current: Dict[str, Any]) -> Tuple[bool, str]:
+    """Record the opt-in once the private profile is signed in to claude.ai."""
     if not current["connected"]:
         return False, str(current.get("error", "Claude Code sign-in failed."))
     save_credential(CRED_FILE, ClaudeCodeConnection(profile_version=PROFILE_VERSION))
     if not has_credential():
         return False, "Could not save the Claude Code connection."
-    return (
-        True,
-        "Claude subscription connected using CraftBot's separate Claude profile.",
-    )
+    who = f" as {current['email']}" if current.get("email") else ""
+    return True, f"Claude subscription connected{who}."
+
+
+_login_lock = threading.Lock()
+_login_process: Optional[subprocess.Popen] = None
+
+
+def _last_message(output: List[str]) -> str:
+    for line in reversed(output):
+        line = _PASTE_PROMPT.sub("", line).strip()
+        if line:
+            return line
+    return ""
+
+
+def _browser_login() -> Tuple[bool, str]:
+    """Run ``claude auth login`` until the user approves in its browser tab."""
+    global _login_process
+    try:
+        process = subprocess.Popen(
+            [*cli_command(), "auth", "login", "--claudeai"],
+            env=cli_environment(),
+            # Never written, but kept open: at end of input the CLI would
+            # stop waiting for the browser.
+            stdin=subprocess.PIPE,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.STDOUT,
+            creationflags=subprocess.CREATE_NO_WINDOW if os.name == "nt" else 0,
+        )
+    except RuntimeError as e:
+        return False, str(e)
+    except OSError as e:
+        return False, f"Could not start Claude Code: {e}"
+    # A newer Connect replaces an abandoned sign-in instead of waiting for it.
+    with _login_lock:
+        previous, _login_process = _login_process, process
+    if previous is not None and previous.poll() is None:
+        previous.kill()
+    output: List[str] = []
+
+    def read_output() -> None:
+        for raw in iter(process.stdout.readline, b""):
+            output.append(raw.decode("utf-8", "replace").strip())
+
+    reader = threading.Thread(target=read_output, daemon=True)
+    reader.start()
+    try:
+        process.wait(timeout=LOGIN_TIMEOUT_SECONDS)
+    except subprocess.TimeoutExpired:
+        process.kill()
+        return False, "Claude sign-in timed out. Click Connect to try again."
+    finally:
+        with _login_lock:
+            replaced = _login_process is not process
+            if not replaced:
+                _login_process = None
+    reader.join(timeout=5)
+    if replaced:
+        return False, "A newer Claude sign-in replaced this one."
+    if process.returncode:
+        detail = _last_message(output) or "Claude Code could not sign in"
+        return False, f"Claude sign-in failed: {detail}"
+    return _save_connection(auth_status())
+
+
+def _login() -> Tuple[bool, str]:
+    # A sign-in the private profile already has needs no browser.
+    current = auth_status()
+    if current["connected"]:
+        return _save_connection(current)
+    return _browser_login()
 
 
 async def run_login() -> Tuple[bool, str]:
-    # subprocess.run also works with Windows selector event loops.
+    """Sign in like ChatGPT's loopback flow: Claude Code opens one browser
+    tab, and this returns once the user approves there or the wait times out."""
     return await asyncio.to_thread(_login)
 
 
