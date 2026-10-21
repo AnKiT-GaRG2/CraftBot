@@ -186,6 +186,15 @@ ERROR_SPECS: Dict[str, Tuple[str, str, str, str]] = {
         "No saved login matches {site}. Ask the user to add one under Passwords "
         "in the browser panel, or to sign in themselves in the live view.",
     ),
+    "MINI_BROWSER_LOGIN_AMBIGUOUS": (
+        "validation",
+        "warning",
+        "Saved login name is ambiguous",
+        "More than one saved login on this site matches that name. Nothing was "
+        "filled. Pass the account's username as well as login_name, or ask the "
+        "user to give the saved logins distinct names in Settings > Credentials. "
+        "Do not retry without the requested name to choose another account.",
+    ),
     "MINI_BROWSER_LOGIN_FAILED": (
         "validation",
         "warning",

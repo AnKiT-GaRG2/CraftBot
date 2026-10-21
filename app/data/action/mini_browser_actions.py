@@ -642,6 +642,10 @@ async def mini_browser_upload_file(input_data: dict) -> dict:
         "Browser password vault. Open the site's sign-in page first; the "
         "saved username and password are filled in for you (you never see "
         "the password, and it is never logged) and the form is submitted. "
+        "To use a saved login by its name/label, pass login_name, not username. "
+        "Names match exactly, ignoring case and surrounding whitespace, only "
+        "among logins allowed on the current site. Duplicate names need a "
+        "username too; a missing name never falls back to another login. "
         "Two-step sign-ins (email first, then password) are handled. The "
         "result's outcome (signed_in, needs_verification, captcha or unknown) "
         "and message say what to do next; never assume success on unknown. "
@@ -655,12 +659,23 @@ async def mini_browser_upload_file(input_data: dict) -> dict:
     parallelizable=False,
     irreversible=False,
     input_schema={
+        "login_name": {
+            "type": "string",
+            "example": "Work account",
+            "description": (
+                "Optional. The saved login's name/label in Settings > Credentials "
+                "(e.g. Work account), not its username or email. Exact name match, "
+                "ignoring case and surrounding whitespace; at most 100 characters. "
+                "Pass username as well to disambiguate duplicate names."
+            ),
+        },
         "username": {
             "type": "string",
             "example": "me@example.com",
             "description": (
-                "Optional. Which saved account to use when several are saved "
-                "for this site."
+                "Optional. The account's actual username or email, never the "
+                "saved login's name/label (use login_name for that). When both "
+                "are given, the saved login must match both."
             ),
         },
         "submit": {

@@ -265,5 +265,57 @@
       "title": "問題が発生しました",
       "message": "ミニブラウザで予期しない問題が発生しました。"
     }
+  },
+  "credentials": {
+    "title": "認証情報",
+    "intro": "ログイン、API キー、プライベートなメモをひとまとめに。",
+    "search": "認証情報を検索",
+    "add": "認証情報を追加",
+    "save": "認証情報を保存",
+    "editTitle": "認証情報を編集",
+    "type": "種類",
+    "group": "グループ",
+    "all": "すべての項目",
+    "allGroups": "すべてのグループ",
+    "list": "保存済みの認証情報",
+    "kinds": {
+      "login": "ログイン",
+      "api_key": "API キー",
+      "secure_note": "セキュアメモ"
+    },
+    "groups": {
+      "work": "仕事",
+      "personal": "個人",
+      "other": "その他"
+    },
+    "name": "名前",
+    "optionalName": "名前（任意）",
+    "optionalWebsite": "ウェブサイト（任意）",
+    "apiWebsiteHint": "API ホスト（例: api.example.com）を設定すると、エージェントがキーを見ずに使用できます。リクエストのホストとポートは完全一致が必要で、HTTPS（localhost のみ HTTP 可）を使用します。リダイレクトは拒否されます。",
+    "apiKey": "API キー",
+    "note": "メモ",
+    "keepValue": "空欄のままで保存済みの値を維持",
+    "loading": "認証情報を読み込み中…",
+    "empty": "ここから保管庫を始めましょう",
+    "emptyHint": "ログイン、API キー、セキュアメモを追加します。",
+    "noMatches": "一致する認証情報がありません",
+    "searchHint": "検索語やフィルターを変更してください。",
+    "clearFilters": "フィルターを解除",
+    "saved": "認証情報を保存しました",
+    "updated": "認証情報を更新しました",
+    "deleted": "認証情報を削除しました",
+    "view": "値を表示",
+    "viewNamed": "{{name}}を表示",
+    "editNamed": "{{name}}を編集",
+    "deleteNamed": "{{name}}を削除",
+    "deleteTitle": "この認証情報を削除しますか？",
+    "deleteMessage": "「{{name}}」を削除しますか？この保管庫から保存済みの認証情報が削除されます。",
+    "reveal": "値を表示",
+    "hide": "値を隠す",
+    "copy": "値をコピー",
+    "copied": "クリップボードにコピーしました",
+    "copyFailed": "コピーできませんでした。値を選択して手動でコピーしてください。",
+    "revealHint": "表示するまで隠されています。30秒後、またはこのウィンドウを離れると再び隠されます。",
+    "revealFailed": "値を読み込めませんでした。接続を確認して再試行してください。"
   }
 }

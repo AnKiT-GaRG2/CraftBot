@@ -265,5 +265,57 @@
       "title": "문제가 발생했습니다",
       "message": "미니 브라우저에 예기치 않은 문제가 발생했습니다."
     }
+  },
+  "credentials": {
+    "title": "자격 증명",
+    "intro": "로그인, API 키, 개인 메모를 한곳에서 관리하세요.",
+    "search": "자격 증명 검색",
+    "add": "자격 증명 추가",
+    "save": "자격 증명 저장",
+    "editTitle": "자격 증명 편집",
+    "type": "유형",
+    "group": "그룹",
+    "all": "모든 항목",
+    "allGroups": "모든 그룹",
+    "list": "저장된 자격 증명",
+    "kinds": {
+      "login": "로그인",
+      "api_key": "API 키",
+      "secure_note": "보안 메모"
+    },
+    "groups": {
+      "work": "업무",
+      "personal": "개인",
+      "other": "기타"
+    },
+    "name": "이름",
+    "optionalName": "이름 (선택 사항)",
+    "optionalWebsite": "웹사이트 (선택 사항)",
+    "apiWebsiteHint": "API 호스트(예: api.example.com)를 설정하면 에이전트가 키를 보지 않고 사용할 수 있습니다. 요청은 호스트 및 포트와 정확히 일치해야 하며 HTTPS(localhost는 HTTP도 허용)를 사용해야 합니다. 리디렉션은 차단됩니다.",
+    "apiKey": "API 키",
+    "note": "메모",
+    "keepValue": "저장된 값을 유지하려면 비워 두세요",
+    "loading": "자격 증명 불러오는 중…",
+    "empty": "여기에서 보관함을 시작하세요",
+    "emptyHint": "로그인, API 키 또는 보안 메모를 추가하세요.",
+    "noMatches": "일치하는 자격 증명 없음",
+    "searchHint": "검색어나 필터를 변경하세요.",
+    "clearFilters": "필터 지우기",
+    "saved": "자격 증명 저장됨",
+    "updated": "자격 증명 업데이트됨",
+    "deleted": "자격 증명 삭제됨",
+    "view": "값 보기",
+    "viewNamed": "{{name}} 보기",
+    "editNamed": "{{name}} 편집",
+    "deleteNamed": "{{name}} 삭제",
+    "deleteTitle": "이 자격 증명을 삭제할까요?",
+    "deleteMessage": "“{{name}}”을(를) 삭제할까요? 이 보관함에서 저장된 자격 증명이 삭제됩니다.",
+    "reveal": "값 표시",
+    "hide": "값 숨기기",
+    "copy": "값 복사",
+    "copied": "클립보드에 복사됨",
+    "copyFailed": "복사할 수 없습니다. 값을 선택하여 직접 복사하세요.",
+    "revealHint": "표시하기 전까지 숨겨집니다. 30초 후 또는 이 창을 벗어나면 다시 숨겨집니다.",
+    "revealFailed": "값을 불러올 수 없습니다. 연결을 확인하고 다시 시도하세요."
   }
 }

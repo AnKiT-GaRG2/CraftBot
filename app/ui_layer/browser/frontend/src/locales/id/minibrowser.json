@@ -265,5 +265,57 @@
       "title": "Terjadi masalah",
       "message": "Peramban Mini mengalami masalah yang tidak terduga."
     }
+  },
+  "credentials": {
+    "title": "Kredensial",
+    "intro": "Login, kunci API, dan catatan pribadi di satu tempat.",
+    "search": "Cari kredensial",
+    "add": "Tambah kredensial",
+    "save": "Simpan kredensial",
+    "editTitle": "Edit kredensial",
+    "type": "Jenis",
+    "group": "Grup",
+    "all": "Semua item",
+    "allGroups": "Semua grup",
+    "list": "Kredensial tersimpan",
+    "kinds": {
+      "login": "Login",
+      "api_key": "Kunci API",
+      "secure_note": "Catatan aman"
+    },
+    "groups": {
+      "work": "Kerja",
+      "personal": "Pribadi",
+      "other": "Lainnya"
+    },
+    "name": "Nama",
+    "optionalName": "Nama (opsional)",
+    "optionalWebsite": "Situs web (opsional)",
+    "apiWebsiteHint": "Isi host API (misalnya api.example.com) agar agen dapat memakai kunci ini tanpa melihatnya. Permintaan harus cocok persis dengan host dan port ini, melalui HTTPS (atau HTTP di localhost). Pengalihan diblokir.",
+    "apiKey": "Kunci API",
+    "note": "Catatan",
+    "keepValue": "Kosongkan untuk mempertahankan nilai tersimpan",
+    "loading": "Memuat kredensial…",
+    "empty": "Brankas Anda dimulai di sini",
+    "emptyHint": "Tambahkan login, kunci API, atau catatan aman.",
+    "noMatches": "Tidak ada kredensial yang cocok",
+    "searchHint": "Coba pencarian lain atau ubah filter.",
+    "clearFilters": "Hapus filter",
+    "saved": "Kredensial disimpan",
+    "updated": "Kredensial diperbarui",
+    "deleted": "Kredensial dihapus",
+    "view": "Lihat nilai",
+    "viewNamed": "Lihat {{name}}",
+    "editNamed": "Edit {{name}}",
+    "deleteNamed": "Hapus {{name}}",
+    "deleteTitle": "Hapus kredensial ini?",
+    "deleteMessage": "Hapus “{{name}}”? Kredensial tersimpan akan dihapus dari brankas ini.",
+    "reveal": "Tampilkan nilai",
+    "hide": "Sembunyikan nilai",
+    "copy": "Salin nilai",
+    "copied": "Disalin ke papan klip",
+    "copyFailed": "Tidak dapat menyalin. Pilih dan salin nilai secara manual.",
+    "revealHint": "Tersembunyi hingga ditampilkan. Nilai disembunyikan lagi setelah 30 detik atau saat Anda meninggalkan jendela ini.",
+    "revealFailed": "Tidak dapat memuat nilai. Periksa koneksi dan coba lagi."
   }
 }

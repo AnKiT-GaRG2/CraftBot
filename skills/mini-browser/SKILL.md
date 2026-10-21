@@ -65,10 +65,10 @@ clicking anything destructive, never after.
 
 ## Logins
 
-- Open the site's sign-in page, then call `mini_browser_login`. It fills the
-  user's saved username and password for that site (you never see the
-  password) and submits. Pass `username` only to choose between saved
-  accounts.
+- Call `mini_browser_login` on the sign-in page to fill and submit a saved
+  login without exposing passwords. Use `login_name` for its label,
+  `username` for the account, or both for duplicates. Never drop a
+  missing/ambiguous name.
 - Never type a password with `mini_browser_type` and never ask for one in
   chat. No saved login: ask the user to add it under Passwords in the
   browser panel, or to sign in themselves in the live view (this chat's

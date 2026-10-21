@@ -1109,12 +1109,17 @@ export interface MiniBrowserNavResult {
   error?: MiniBrowserError
 }
 
-/** One saved login. Passwords never travel to the UI. */
+export type CredentialKind = 'login' | 'api_key' | 'secure_note'
+export type CredentialGroup = 'work' | 'personal' | 'other'
+
+/** Public metadata only; values are never included in the resource cache. */
 export interface MiniBrowserVaultEntry {
   id: string
   site: string
   username: string
   label: string
+  kind?: CredentialKind
+  group?: CredentialGroup
   createdAt: string | number | null
   updatedAt: string | number | null
   lastUsedAt: string | number | null

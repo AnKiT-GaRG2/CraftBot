@@ -2715,7 +2715,7 @@ class BrowserCore:
 
     def vault(self) -> Any:
         """The credential vault (``vault.get_vault()``)."""
-        from app.mini_browser.vault import get_vault
+        from app.credentials import get_vault
 
         return get_vault()
 

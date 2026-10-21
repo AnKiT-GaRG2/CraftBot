@@ -266,5 +266,57 @@
       "title": "Algo salió mal",
       "message": "El Mininavegador tuvo un problema inesperado."
     }
+  },
+  "credentials": {
+    "title": "Credenciales",
+    "intro": "Tus inicios de sesión, claves API y notas privadas en un solo lugar.",
+    "search": "Buscar credenciales",
+    "add": "Añadir credencial",
+    "save": "Guardar credencial",
+    "editTitle": "Editar credencial",
+    "type": "Tipo",
+    "group": "Grupo",
+    "all": "Todos los elementos",
+    "allGroups": "Todos los grupos",
+    "list": "Credenciales guardadas",
+    "kinds": {
+      "login": "Inicios de sesión",
+      "api_key": "Claves API",
+      "secure_note": "Notas seguras"
+    },
+    "groups": {
+      "work": "Trabajo",
+      "personal": "Personal",
+      "other": "Otros"
+    },
+    "name": "Nombre",
+    "optionalName": "Nombre (opcional)",
+    "optionalWebsite": "Sitio web (opcional)",
+    "apiWebsiteHint": "Indica el host de la API (por ejemplo, api.example.com) para que los agentes usen esta clave sin verla. Las solicitudes deben coincidir exactamente con el host y el puerto y usar HTTPS (o HTTP en localhost). Las redirecciones se bloquean.",
+    "apiKey": "Clave API",
+    "note": "Nota",
+    "keepValue": "Dejar en blanco para conservar el valor guardado",
+    "loading": "Cargando credenciales…",
+    "empty": "Tu bóveda empieza aquí",
+    "emptyHint": "Añade un inicio de sesión, una clave API o una nota segura.",
+    "noMatches": "No hay credenciales coincidentes",
+    "searchHint": "Prueba otra búsqueda o cambia los filtros.",
+    "clearFilters": "Borrar filtros",
+    "saved": "Credencial guardada",
+    "updated": "Credencial actualizada",
+    "deleted": "Credencial eliminada",
+    "view": "Ver valor",
+    "viewNamed": "Ver {{name}}",
+    "editNamed": "Editar {{name}}",
+    "deleteNamed": "Eliminar {{name}}",
+    "deleteTitle": "¿Eliminar esta credencial?",
+    "deleteMessage": "¿Eliminar «{{name}}»? Se eliminará la credencial guardada de esta bóveda.",
+    "reveal": "Mostrar valor",
+    "hide": "Ocultar valor",
+    "copy": "Copiar valor",
+    "copied": "Copiado al portapapeles",
+    "copyFailed": "No se pudo copiar. Selecciona y copia el valor manualmente.",
+    "revealHint": "Oculto hasta que lo muestres. Se ocultará tras 30 segundos o al salir de esta ventana.",
+    "revealFailed": "No se pudo cargar el valor. Comprueba la conexión e inténtalo de nuevo."
   }
 }

@@ -466,6 +466,8 @@ function parseVaultEntry(v: unknown): MiniBrowserVaultEntry | null {
     site: str(v.site),
     username: str(v.username),
     label: str(v.label),
+    kind: v.kind === 'api_key' || v.kind === 'secure_note' ? v.kind : 'login',
+    group: v.group === 'work' || v.group === 'personal' ? v.group : 'other',
     createdAt: timestamp(v.createdAt),
     updatedAt: timestamp(v.updatedAt),
     lastUsedAt: timestamp(v.lastUsedAt),
