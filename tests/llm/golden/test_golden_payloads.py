@@ -236,24 +236,23 @@ def test_provider_request_quirks(golden):
     def _payload(provider, model):
         iface, rec = golden(provider, model)
         iface.generate_response(system_prompt="respond in json " * 40, user_prompt="hi")
-        return [c for c in rec.calls if c["method"] == "chat.completions.create"][0][
+        payload = [c for c in rec.calls if c["method"] == "chat.completions.create"][0][
             "payload"
         ]
+        assert iface._output_reservation(iface.reasoning_decision()) == payload.get(
+            "max_completion_tokens", payload.get("max_tokens")
+        )
+        return payload
 
     # Perplexity: json_object is a hard 400 → must be omitted.
     ppx = _payload("perplexity", "sonar-pro")
     assert "response_format" not in ppx
 
-    # LM Studio: json_object unsupported → omitted.
+    # LM Studio: json_object unsupported → omitted. It also does not accept
+    # the prompt_cache_key routing hint used by some cloud providers.
     lms = _payload("lmstudio", "openai/gpt-oss-20b")
     assert "response_format" not in lms
-
-    # OmniRoute (local OpenAI-compatible router): a routed backend may reject
-    # json_object → omitted; and as a proxy it must NOT receive prompt_cache_key
-    # (KV-safe — avoids a 400, gains nothing).
-    omni = _payload("omniroute", "auto")
-    assert "response_format" not in omni
-    assert "prompt_cache_key" not in (omni.get("extra_body") or {})
+    assert "prompt_cache_key" not in (lms.get("extra_body") or {})
 
     # Qwen: temperature 0 is rejected → sent as 0.01 (not 0.0, not omitted).
     qwen = _payload("qwen", "qwen-max")

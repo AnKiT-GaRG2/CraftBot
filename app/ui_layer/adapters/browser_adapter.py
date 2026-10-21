@@ -2946,7 +2946,7 @@ A quick Q&A will now begin to understand your objectives to serve you better:"""
             try:
                 from app.ui_layer.settings.model_settings import get_model_settings
 
-                settings_data = get_model_settings()
+                settings_data = await asyncio.to_thread(get_model_settings)
                 base_url = settings_data.get("base_urls", {}).get("remote")
             except Exception:
                 pass
@@ -6170,7 +6170,8 @@ A quick Q&A will now begin to understand your objectives to serve you better:"""
     async def _handle_model_settings_get(self) -> None:
         """Get current model settings."""
         try:
-            result = get_model_settings()
+            # Includes subscription status, which runs the Claude CLI.
+            result = await asyncio.to_thread(get_model_settings)
             await self._broadcast(
                 {
                     "type": "model_settings_get",
@@ -6187,6 +6188,19 @@ A quick Q&A will now begin to understand your objectives to serve you better:"""
                     },
                 }
             )
+
+    def _model_change_lock(self) -> asyncio.Lock:
+        """Order persistence, activation and rollbacks across all browser clients."""
+        if not hasattr(self, "_model_settings_lock"):
+            self._model_settings_lock = asyncio.Lock()
+        return self._model_settings_lock
+
+    def _subscription_request(self, provider: str) -> object:
+        if not hasattr(self, "_subscription_requests"):
+            self._subscription_requests = {}
+        request = object()
+        self._subscription_requests[provider] = request
+        return request
 
     async def _handle_model_settings_update(self, data: Dict[str, Any]) -> None:
         """Update model settings.
@@ -6279,127 +6293,155 @@ A quick Q&A will now begin to understand your objectives to serve you better:"""
                     )
                     return
 
-            # Capture the current image-gen provider/model BEFORE saving, so a
-            # failed reinitialize below can roll the persisted values back and
-            # keep settings.json consistent with the still-live interface.
-            prev_image_gen_provider = None
-            prev_image_gen_model = None
-            if image_gen_provider:
-                from app.config import (
-                    get_image_gen_provider as _get_ig_provider,
-                    get_image_gen_model as _get_ig_model,
+            async with self._model_change_lock():
+                # Capture the current image-gen provider/model BEFORE saving, so a
+                # failed reinitialize below can roll the persisted values back and
+                # keep settings.json consistent with the still-live interface.
+                prev_image_gen_provider = None
+                prev_image_gen_model = None
+                if image_gen_provider:
+                    from app.config import (
+                        get_image_gen_provider as _get_ig_provider,
+                        get_image_gen_model as _get_ig_model,
+                    )
+
+                    prev_image_gen_provider = _get_ig_provider()
+                    prev_image_gen_model = _get_ig_model()
+
+                prev_video_gen_provider = None
+                prev_video_gen_model = None
+                if video_gen_provider:
+                    from app.config import (
+                        get_video_gen_provider as _get_vg_provider,
+                        get_video_gen_model as _get_vg_model,
+                    )
+
+                    prev_video_gen_provider = _get_vg_provider()
+                    prev_video_gen_model = _get_vg_model()
+
+                # Step 3: Now save settings (validation and connection test passed)
+                result = await asyncio.to_thread(
+                    update_model_settings,
+                    include_subscription_status=False,
+                    llm_provider=new_provider,
+                    vlm_provider=vlm_provider,
+                    image_gen_provider=image_gen_provider,
+                    video_gen_provider=video_gen_provider,
+                    llm_model=data.get("llmModel"),
+                    vlm_model=data.get("vlmModel"),
+                    image_gen_model=data.get("imageGenModel"),
+                    video_gen_model=data.get("videoGenModel"),
+                    api_key=api_key,
+                    provider_for_key=provider_for_key,
+                    base_url=base_url,
+                    provider_for_url=data.get("providerForUrl"),
+                    aws_credentials=data.get("awsCredentials"),
                 )
 
-                prev_image_gen_provider = _get_ig_provider()
-                prev_image_gen_model = _get_ig_model()
+                # Reinitialize LLM/VLM with new provider settings
+                if result.get("success") and new_provider:
+                    try:
+                        agent = self._controller.agent
+                        agent.reinitialize_llm(new_provider)
+                        logger.info(
+                            f"[BROWSER] LLM reinitialized with provider: {new_provider}"
+                        )
+                    except Exception as e:
+                        logger.warning(f"[BROWSER] Failed to reinitialize LLM: {e}")
+                        result["warning"] = (
+                            f"Settings saved but LLM reinitialization failed: {e}"
+                        )
 
-            prev_video_gen_provider = None
-            prev_video_gen_model = None
-            if video_gen_provider:
-                from app.config import (
-                    get_video_gen_provider as _get_vg_provider,
-                    get_video_gen_model as _get_vg_model,
+                # Reinitialize image gen interface when its provider changes.
+                # Settings are already persisted above, and reinitialize_image_gen
+                # only swaps the live interface on success — so if it fails (e.g.
+                # the new provider has no API key) we must roll the saved image-gen
+                # provider/model back to match the still-live interface. Otherwise
+                # settings.json would advertise a provider the running interface
+                # can't serve.
+                if result.get("success") and image_gen_provider:
+                    reinit_ok = False
+                    try:
+                        agent = self._controller.agent
+                        reinit_ok = agent.reinitialize_image_gen(image_gen_provider)
+                    except Exception as e:
+                        logger.warning(
+                            f"[BROWSER] Failed to reinitialize image gen: {e}"
+                        )
+
+                    if reinit_ok:
+                        logger.info(
+                            f"[BROWSER] Image gen reinitialized with provider: {image_gen_provider}"
+                        )
+                    else:
+                        # Roll persisted image-gen settings back to the previous
+                        # (still-live) values to avoid a settings/interface mismatch.
+                        await asyncio.to_thread(
+                            update_model_settings,
+                            include_subscription_status=False,
+                            image_gen_provider=prev_image_gen_provider,
+                            image_gen_model=prev_image_gen_model,
+                        )
+                        msg = (
+                            f"Image generation provider '{image_gen_provider}' could not be "
+                            f"initialized — check its API key. Kept '{prev_image_gen_provider}'."
+                        )
+                        logger.warning(f"[BROWSER] {msg}")
+                        result["warning"] = result.get("warning") or msg
+
+                # Reinitialize video gen interface when its provider changes.
+                # Mirrors the image gen pattern: roll back on reinit failure.
+                if result.get("success") and video_gen_provider:
+                    reinit_vid_ok = False
+                    try:
+                        agent = self._controller.agent
+                        reinit_vid_ok = agent.reinitialize_video_gen(video_gen_provider)
+                    except Exception as e:
+                        logger.warning(
+                            f"[BROWSER] Failed to reinitialize video gen: {e}"
+                        )
+
+                    if reinit_vid_ok:
+                        logger.info(
+                            f"[BROWSER] Video gen reinitialized with provider: {video_gen_provider}"
+                        )
+                    else:
+                        await asyncio.to_thread(
+                            update_model_settings,
+                            include_subscription_status=False,
+                            video_gen_provider=prev_video_gen_provider,
+                            video_gen_model=prev_video_gen_model,
+                        )
+                        msg = (
+                            f"Video generation provider '{video_gen_provider}' could not be "
+                            f"initialized — check its API key. Kept '{prev_video_gen_provider}'."
+                        )
+                        logger.warning(f"[BROWSER] {msg}")
+                        result["warning"] = result.get("warning") or msg
+
+            # Status may invoke a slow CLI. Persistence and live activation are
+            # already complete, so another Save can safely proceed meanwhile.
+            if result.get("success"):
+                current = await asyncio.to_thread(get_model_settings)
+                result["subscription_oauth"] = current.get("subscription_oauth", {})
+
+            async with self._model_change_lock():
+                if result.get("success"):
+                    # Another client may have saved while status was pending.
+                    # Broadcast current saved values so a late response cannot
+                    # move either client's selector back to an older provider.
+                    current = await asyncio.to_thread(
+                        get_model_settings, include_subscription_status=False
+                    )
+                    current.pop("subscription_oauth", None)
+                    if current.get("success"):
+                        result.update(current)
+                await self._broadcast(
+                    {
+                        "type": "model_settings_update",
+                        "data": result,
+                    }
                 )
-
-                prev_video_gen_provider = _get_vg_provider()
-                prev_video_gen_model = _get_vg_model()
-
-            # Step 3: Now save settings (validation and connection test passed)
-            result = update_model_settings(
-                llm_provider=new_provider,
-                vlm_provider=vlm_provider,
-                image_gen_provider=image_gen_provider,
-                video_gen_provider=video_gen_provider,
-                llm_model=data.get("llmModel"),
-                vlm_model=data.get("vlmModel"),
-                image_gen_model=data.get("imageGenModel"),
-                video_gen_model=data.get("videoGenModel"),
-                api_key=api_key,
-                provider_for_key=provider_for_key,
-                base_url=base_url,
-                provider_for_url=data.get("providerForUrl"),
-                aws_credentials=data.get("awsCredentials"),
-            )
-
-            # Reinitialize LLM/VLM with new provider settings
-            if result.get("success") and new_provider:
-                try:
-                    agent = self._controller.agent
-                    agent.reinitialize_llm(new_provider)
-                    logger.info(
-                        f"[BROWSER] LLM reinitialized with provider: {new_provider}"
-                    )
-                except Exception as e:
-                    logger.warning(f"[BROWSER] Failed to reinitialize LLM: {e}")
-                    result["warning"] = (
-                        f"Settings saved but LLM reinitialization failed: {e}"
-                    )
-
-            # Reinitialize image gen interface when its provider changes.
-            # Settings are already persisted above, and reinitialize_image_gen
-            # only swaps the live interface on success — so if it fails (e.g.
-            # the new provider has no API key) we must roll the saved image-gen
-            # provider/model back to match the still-live interface. Otherwise
-            # settings.json would advertise a provider the running interface
-            # can't serve.
-            if result.get("success") and image_gen_provider:
-                reinit_ok = False
-                try:
-                    agent = self._controller.agent
-                    reinit_ok = agent.reinitialize_image_gen(image_gen_provider)
-                except Exception as e:
-                    logger.warning(f"[BROWSER] Failed to reinitialize image gen: {e}")
-
-                if reinit_ok:
-                    logger.info(
-                        f"[BROWSER] Image gen reinitialized with provider: {image_gen_provider}"
-                    )
-                else:
-                    # Roll persisted image-gen settings back to the previous
-                    # (still-live) values to avoid a settings/interface mismatch.
-                    update_model_settings(
-                        image_gen_provider=prev_image_gen_provider,
-                        image_gen_model=prev_image_gen_model,
-                    )
-                    msg = (
-                        f"Image generation provider '{image_gen_provider}' could not be "
-                        f"initialized — check its API key. Kept '{prev_image_gen_provider}'."
-                    )
-                    logger.warning(f"[BROWSER] {msg}")
-                    result["warning"] = result.get("warning") or msg
-
-            # Reinitialize video gen interface when its provider changes.
-            # Mirrors the image gen pattern: roll back on reinit failure.
-            if result.get("success") and video_gen_provider:
-                reinit_vid_ok = False
-                try:
-                    agent = self._controller.agent
-                    reinit_vid_ok = agent.reinitialize_video_gen(video_gen_provider)
-                except Exception as e:
-                    logger.warning(f"[BROWSER] Failed to reinitialize video gen: {e}")
-
-                if reinit_vid_ok:
-                    logger.info(
-                        f"[BROWSER] Video gen reinitialized with provider: {video_gen_provider}"
-                    )
-                else:
-                    update_model_settings(
-                        video_gen_provider=prev_video_gen_provider,
-                        video_gen_model=prev_video_gen_model,
-                    )
-                    msg = (
-                        f"Video generation provider '{video_gen_provider}' could not be "
-                        f"initialized — check its API key. Kept '{prev_video_gen_provider}'."
-                    )
-                    logger.warning(f"[BROWSER] {msg}")
-                    result["warning"] = result.get("warning") or msg
-
-            await self._broadcast(
-                {
-                    "type": "model_settings_update",
-                    "data": result,
-                }
-            )
         except Exception as e:
             await self._broadcast(
                 {
@@ -6479,7 +6521,7 @@ A quick Q&A will now begin to understand your objectives to serve you better:"""
         """Fetch available models from Ollama and broadcast to frontend."""
         try:
             if not base_url:
-                settings_data = get_model_settings()
+                settings_data = await asyncio.to_thread(get_model_settings)
                 base_url = settings_data.get("base_urls", {}).get("remote")
             result = await asyncio.to_thread(get_ollama_models, base_url=base_url)
             await self._broadcast({"type": "ollama_models_get", "data": result})
@@ -6632,10 +6674,14 @@ A quick Q&A will now begin to understand your objectives to serve you better:"""
         provider is echoed back in ``active_provider`` so the frontend
         dropdown updates immediately.
         """
+        request = self._subscription_request(provider)
         try:
             success, message = await connect_subscription_async(provider)
-            active_provider = self._activate_provider_via_settings(success, provider)
-            status_payload = get_subscription_status(provider)
+            active_provider = await self._activate_provider_via_settings(
+                success, provider, request=request
+            )
+            # Claude's status runs its CLI, so keep it off the event loop.
+            status_payload = await asyncio.to_thread(get_subscription_status, provider)
             await self._broadcast(
                 {
                     "type": "model_subscription_connect",
@@ -6661,8 +6707,8 @@ A quick Q&A will now begin to understand your objectives to serve you better:"""
                 }
             )
 
-    def _activate_provider_via_settings(
-        self, connect_success: bool, provider: str
+    async def _activate_provider_via_settings(
+        self, connect_success: bool, provider: str, *, request: object = None
     ) -> Optional[str]:
         """Reuse the manual-Save path to make ``provider`` the active LLM.
 
@@ -6677,10 +6723,22 @@ A quick Q&A will now begin to understand your objectives to serve you better:"""
         if not connect_success:
             return None
         try:
-            update_model_settings(llm_provider=provider)
-            self._controller.agent.reinitialize_llm(provider)
-            logger.info(f"[BROWSER] LLM reinitialized with provider: {provider}")
-            return provider
+            async with self._model_change_lock():
+                if (
+                    request is not None
+                    and self._subscription_requests.get(provider) is not request
+                ):
+                    return None
+                result = await asyncio.to_thread(
+                    update_model_settings,
+                    llm_provider=provider,
+                    include_subscription_status=False,
+                )
+                if not result.get("success"):
+                    return None
+                self._controller.agent.reinitialize_llm(provider)
+                logger.info(f"[BROWSER] LLM reinitialized with provider: {provider}")
+                return provider
         except Exception as e:
             logger.warning(
                 f"[BROWSER] Failed to activate provider {provider} after "
@@ -6698,30 +6756,34 @@ A quick Q&A will now begin to understand your objectives to serve you better:"""
         the factory rebuilds the client — falling back to the stored API key
         now that the subscription credential is gone.
         """
+        self._subscription_request(provider)
         try:
-            success, message = disconnect_subscription(provider)
-            warning = None
-            if success:
-                try:
-                    from app.ui_layer.settings.provider_settings import (
-                        get_current_provider,
-                    )
-
-                    if get_current_provider() == provider:
-                        self._controller.agent.reinitialize_llm(provider)
-                        logger.info(
-                            f"[BROWSER] LLM reinitialized with provider {provider} "
-                            "after subscription disconnect (API-key mode)"
+            async with self._model_change_lock():
+                success, message = await asyncio.to_thread(
+                    disconnect_subscription, provider
+                )
+                warning = None
+                if success:
+                    try:
+                        from app.ui_layer.settings.provider_settings import (
+                            get_current_provider,
                         )
-                except Exception as e:
-                    logger.warning(
-                        f"[BROWSER] LLM reinit after {provider} subscription "
-                        f"disconnect failed: {e}"
-                    )
-                    warning = (
-                        "Subscription disconnected, but the model could not be "
-                        f"reinitialized: {e}"
-                    )
+
+                        if get_current_provider() == provider:
+                            self._controller.agent.reinitialize_llm(provider)
+                            logger.info(
+                                f"[BROWSER] LLM reinitialized with provider {provider} "
+                                "after subscription disconnect (API-key mode)"
+                            )
+                    except Exception as e:
+                        logger.warning(
+                            f"[BROWSER] LLM reinit after {provider} subscription "
+                            f"disconnect failed: {e}"
+                        )
+                        warning = (
+                            "Subscription disconnected, but the model could not be "
+                            f"reinitialized: {e}"
+                        )
             await self._broadcast(
                 {
                     "type": "model_subscription_disconnect",
@@ -6730,7 +6792,9 @@ A quick Q&A will now begin to understand your objectives to serve you better:"""
                         "provider": provider,
                         "message": message,
                         "warning": warning,
-                        "status": get_subscription_status(provider),
+                        "status": await asyncio.to_thread(
+                            get_subscription_status, provider
+                        ),
                     },
                 }
             )
@@ -6750,7 +6814,7 @@ A quick Q&A will now begin to understand your objectives to serve you better:"""
     async def _handle_model_subscription_status(self, provider: str) -> None:
         """Return current connection status for a given provider."""
         try:
-            status_payload = get_subscription_status(provider)
+            status_payload = await asyncio.to_thread(get_subscription_status, provider)
             await self._broadcast(
                 {
                     "type": "model_subscription_status",
@@ -6813,11 +6877,14 @@ A quick Q&A will now begin to understand your objectives to serve you better:"""
         ``_handle_model_subscription_connect`` does — see
         ``_activate_provider_via_settings``.
         """
+        request = self._subscription_request(provider)
         try:
             success, message = await asyncio.to_thread(
                 complete_subscription, provider, code, attempt_id
             )
-            active_provider = self._activate_provider_via_settings(success, provider)
+            active_provider = await self._activate_provider_via_settings(
+                success, provider, request=request
+            )
             await self._broadcast(
                 {
                     "type": "model_subscription_complete",
@@ -6825,7 +6892,9 @@ A quick Q&A will now begin to understand your objectives to serve you better:"""
                         "success": success,
                         "provider": provider,
                         "message": message,
-                        "status": get_subscription_status(provider),
+                        "status": await asyncio.to_thread(
+                            get_subscription_status, provider
+                        ),
                         "active_provider": active_provider,
                     },
                 }

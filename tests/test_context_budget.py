@@ -307,6 +307,29 @@ def test_an_uncatalogued_model_folds_at_the_settings_window():
         assert _folds_after(iface, 120_000)
 
 
+@pytest.mark.parametrize(
+    "provider,model,output_cap",
+    [
+        ("qwen", "qwen-max", 8192),
+        ("groq", "unruled-model", 32768),
+        ("nvidia", "meta/llama-3.3-70b-instruct", 16384),
+        ("cerebras", "unruled-model", 32000),
+    ],
+)
+def test_context_checks_reserve_the_providers_capped_output(
+    provider, model, output_cap
+):
+    iface = _make(provider, model)
+    iface.max_tokens = 50000
+    decision = iface.reasoning_decision()
+    window, max_input = iface._context_limits()
+    budget = min(window - output_cap, max_input or window)
+
+    assert iface._output_reservation(decision) == output_cap
+    iface._check_context_fits("system", "hi", reasoning=decision)
+    assert _folds_after(iface, budget)
+
+
 def test_a_catalogued_model_folds_at_its_own_window():
     """The settings window is ignored: 200,000 - output 8,000."""
     iface = _make()

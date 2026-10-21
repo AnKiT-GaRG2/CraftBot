@@ -1742,14 +1742,15 @@ print("§23 superuser fail-closed: OK")
 # with "-" was parsed as a flag: nothing saved, launch "succeeded", and every
 # CLI read ran unauthenticated (IP Manager, 2026-09-29). The save is now
 # confirmed from the database, and the password always follows `--`.
-import sqlite3 as _sqlite3
-
 with tempfile.TemporaryDirectory() as tmp:
     runner23b = AgentAppRunner(Path(tmp))
     proj23b = Path(tmp) / "proj"
     (proj23b / "pb" / "pb_data").mkdir(parents=True)
     (proj23b / ".superuser").write_text(
-        _json.dumps({"email": "agent@agent-app.local", "password": "-Starts-with-a-dash"}) + "\n",
+        _json.dumps(
+            {"email": "agent@agent-app.local", "password": "-Starts-with-a-dash"}
+        )
+        + "\n",
         encoding="utf-8",
     )
     seen_cmds = []
@@ -1768,7 +1769,9 @@ with tempfile.TemporaryDirectory() as tmp:
         raise AssertionError("an upsert that saved nothing must refuse to serve")
     except RuntimeError as e:
         assert "refusing to serve" in str(e)
-        assert "-Starts-with-a-dash" not in str(e), "the password must never appear in the error"
+        assert "-Starts-with-a-dash" not in str(e), (
+            "the password must never appear in the error"
+        )
 
     cmd = seen_cmds[-1]
     sep = cmd.index("--")
@@ -1777,10 +1780,13 @@ with tempfile.TemporaryDirectory() as tmp:
 
     async def _real_save(cmd, timeout, cwd=None):
         db = proj23b / "pb" / "pb_data" / "data.db"
-        con = _sqlite3.connect(db)
+        con = sqlite3.connect(db)
         con.execute("CREATE TABLE IF NOT EXISTS _superusers (email TEXT, updated TEXT)")
         con.execute("DELETE FROM _superusers")
-        con.execute("INSERT INTO _superusers VALUES (?, ?)", ("agent@agent-app.local", "2026-09-29 01:00:00.000Z"))
+        con.execute(
+            "INSERT INTO _superusers VALUES (?, ?)",
+            ("agent@agent-app.local", "2026-09-29 01:00:00.000Z"),
+        )
         con.commit()
         con.close()
         return (0, 'Successfully saved superuser "agent@agent-app.local"!')

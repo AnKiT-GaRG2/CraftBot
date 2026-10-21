@@ -7,11 +7,11 @@ All configuration is read from settings.json - no .env file is used.
 
 import json
 import os
-import threading
 from pathlib import Path
 from typing import Any, Dict, Optional, Tuple
 
 from app import paths
+from app.settings_store import settings_transaction, settings_write_lock, write_settings
 
 
 def get_project_root() -> Path:
@@ -158,6 +158,7 @@ def _get_default_settings() -> Dict[str, Any]:
     }
 
 
+@settings_transaction
 def get_settings(reload: bool = False) -> Dict[str, Any]:
     """Load and return settings from settings.json.
 
@@ -518,7 +519,7 @@ def is_prewarm_all_drives_enabled() -> bool:
 
 # Serializes this module's read-modify-write of settings.json between threads
 # (the Mini Browser saves from its own thread).
-_settings_write_lock = threading.Lock()
+_settings_write_lock = settings_write_lock
 
 
 def _clean_mini_browser_value(key: str, value: Any) -> Tuple[bool, Any]:
@@ -620,6 +621,7 @@ def get_slow_mode_tpm_limit() -> int:
     return settings.get("model", {}).get("slow_mode_tpm_limit", 30000)
 
 
+@settings_transaction
 def save_settings(settings: Dict[str, Any]) -> None:
     """Save settings to settings.json.
 
@@ -627,10 +629,8 @@ def save_settings(settings: Dict[str, Any]) -> None:
         settings: Dictionary with settings to save.
     """
     global _settings_cache
+    write_settings(SETTINGS_CONFIG_PATH, settings)
     _settings_cache = settings
-    SETTINGS_CONFIG_PATH.parent.mkdir(parents=True, exist_ok=True)
-    with open(SETTINGS_CONFIG_PATH, "w", encoding="utf-8") as f:
-        json.dump(settings, f, indent=2, ensure_ascii=False)
 
 
 def get_os_language() -> str:
@@ -660,13 +660,15 @@ def get_ui_language() -> str:
     return general.get("ui_language") or general.get("os_language", "en")
 
 
+@settings_transaction
 def set_ui_language(lang_code: str) -> None:
     """Persist the browser UI language to settings.json ``general.ui_language``."""
-    settings = get_settings()
+    settings = get_settings(reload=True)
     settings.setdefault("general", {})["ui_language"] = lang_code
     save_settings(settings)
 
 
+@settings_transaction
 def detect_and_save_os_language() -> str:
     """Detect OS language and save to settings. Called on first launch only.
 
@@ -682,7 +684,7 @@ def detect_and_save_os_language() -> str:
         lang_code = "en"
 
     # Save to settings.json
-    settings = get_settings()
+    settings = get_settings(reload=True)
     settings.setdefault("general", {})["os_language"] = lang_code
     save_settings(settings)
     return lang_code

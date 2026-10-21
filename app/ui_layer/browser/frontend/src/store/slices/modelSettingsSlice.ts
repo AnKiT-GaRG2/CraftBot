@@ -20,7 +20,7 @@ export interface ProviderInfo {
   is_bedrock?: boolean
   // Subscription OAuth (ChatGPT Plus/Pro, SuperGrok). When true the
   // settings page shows a "Sign in with <provider>" button next to the
-  // API-key field. Anthropic is intentionally absent.
+  // API-key field.
   supports_subscription_oauth?: boolean
   subscription_label?: string | null
   subscription_models?: string[]
@@ -35,6 +35,8 @@ export interface ProviderInfo {
 export interface SubscriptionStatus {
   supported: boolean
   connected: boolean
+  configured?: boolean
+  error?: string
   email?: string
   plan?: string
   expires_at?: number
