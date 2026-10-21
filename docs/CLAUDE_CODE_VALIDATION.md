@@ -1,5 +1,34 @@
 # Claude subscription validation report
 
+## Review fixes: 21 October 2026
+
+- Claude Code now receives an explicit thinking disable override when the
+  Messages transport omits thinking for an Off choice. The model reasoning
+  registry determines whether omission means Off, preserving provider defaults
+  on models that think by default. Inherited CLI reasoning preferences are
+  removed before applying the request's choice.
+- Browser settings reads, saves, rollbacks and subscription activation offload
+  live subscription checks. Live interface reinitialization stays on the event
+  loop. Synchronous onboarding validates the saved connection flag and skips
+  unused live status in settings-update results.
+- Focused subscription/reinitialization tests: **56 passed**, including 19 new
+  regression cases for reasoning choices and event-loop isolation.
+- Combined subscription, reinitialization, factory, reasoning, golden-payload
+  and reliability tests: **899 passed, 1 pre-existing failure**. The failure is
+  `test_provider_request_quirks` (`omniroute` is absent from the registry), which
+  was independently reproduced on the pre-PR merge base during review.
+- Real installed Claude Code 2.1.50 against a local stub server: Off omits
+  thinking from the Messages request; High sends adaptive thinking with effort
+  high. Both return the stub response through `ClaudeCodeClient`. No real
+  account credentials or paid model requests were used for this check.
+- Changed Python files pass lint, format, compilation and whitespace checks.
+  Repository-wide lint reports two existing errors in untouched files:
+  `app/agent_app/test_data_safety.py:1745` (E402) and
+  `craftos_integrations/providers/supabase/client.py:209` (E702).
+
+Authenticated private-profile login/logout and live inference acceptance remain
+pending as described below.
+
 ## Current implementation: separate Claude login profile
 
 Updated on 20 October 2026 to implement option 3. CraftBot now uses its own Claude Code profile at `<CraftBot state>/.credentials/claude_code/`. Login, authentication checks, logout and inference all use that profile. The standalone CLI's account and inherited `CLAUDE_CONFIG_DIR` are not adopted.

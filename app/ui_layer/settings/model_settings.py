@@ -168,11 +168,14 @@ def get_available_providers() -> Dict[str, Any]:
 # ─────────────────────────────────────────────────────────────────────
 
 
-def get_model_settings() -> Dict[str, Any]:
+def get_model_settings(*, include_subscription_status: bool = True) -> Dict[str, Any]:
     """Get current model settings.
 
     Returns:
         Dict with current LLM/VLM provider, models, and API key status
+
+    Live subscription status may run the Claude CLI. Callers on an event
+    loop must offload this function or omit status when it is unused.
     """
     try:
         settings = _load_settings()
@@ -248,7 +251,9 @@ def get_model_settings() -> Dict[str, Any]:
             )
 
             for provider_id, info in PROVIDER_INFO.items():
-                if not info.get("supports_subscription_oauth"):
+                if not include_subscription_status or not info.get(
+                    "supports_subscription_oauth"
+                ):
                     continue
                 subscription_status[provider_id] = _oauth_status(provider_id)
         except Exception:
@@ -331,6 +336,7 @@ def update_model_settings(
     base_url: Optional[str] = None,
     provider_for_url: Optional[str] = None,
     aws_credentials: Optional[Dict[str, str]] = None,
+    include_subscription_status: bool = True,
 ) -> Dict[str, Any]:
     """Update model settings.
 
@@ -345,6 +351,8 @@ def update_model_settings(
         provider_for_key: Provider to save API key for
         base_url: Base URL to save (for byteplus/remote)
         provider_for_url: Provider to save base URL for
+        include_subscription_status: Include live account checks in the result.
+            Disable for synchronous onboarding callers that discard the result.
 
     Returns:
         Dict with success status and updated settings
@@ -490,7 +498,9 @@ def update_model_settings(
         reload_settings()
 
         # Return updated settings
-        return get_model_settings()
+        return get_model_settings(
+            include_subscription_status=include_subscription_status
+        )
 
     except Exception as e:
         return {

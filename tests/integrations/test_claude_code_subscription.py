@@ -18,6 +18,7 @@ from agent_core.core.models.claude_code_client import ClaudeCodeClient
 from agent_core.core.models.factory import ModelFactory
 from agent_core.core.models.types import InterfaceType
 
+
 @pytest.fixture(autouse=True)
 def isolated_connection(tmp_path, monkeypatch):
     monkeypatch.setattr(ConfigStore, "project_root", tmp_path)
@@ -270,9 +271,11 @@ def test_settings_connect_button_flips_to_connected(monkeypatch):
         sent.append(message)
 
     adapter._broadcast = broadcast
-    adapter._activate_provider_via_settings = lambda ok, provider: (
-        provider if ok else None
-    )
+
+    async def activate(ok, provider):
+        return provider if ok else None
+
+    adapter._activate_provider_via_settings = activate
     asyncio.run(adapter._handle_model_subscription_connect("anthropic"))
     assert [m["type"] for m in sent] == ["model_subscription_connect"]
     result = sent[0]["data"]
@@ -291,6 +294,9 @@ def test_inherited_api_auth_and_nested_session_do_not_override_subscription(
         "CLAUDE_CODE_OAUTH_TOKEN",
         "CLAUDE_CODE_USE_BEDROCK",
         "CLAUDECODE",
+        "MAX_THINKING_TOKENS",
+        "CLAUDE_CODE_EFFORT_LEVEL",
+        "CLAUDE_CODE_DISABLE_ADAPTIVE_THINKING",
     ):
         monkeypatch.setenv(name, "must-not-reach-cli")
     monkeypatch.setenv("CLAUDE_CONFIG_DIR", "/my/claude/config")
@@ -579,3 +585,197 @@ def test_reconnect_after_logout_needs_a_new_sign_in(monkeypatch):
         assert tokens.disconnect("anthropic")[0]
         assert not tokens.has_credential("anthropic")
     assert len(launched) == 2
+
+
+@pytest.mark.parametrize(
+    "model,choice,expected_budget,expected_effort",
+    [
+        ("claude-sonnet-4-6", "off", "0", None),
+        ("claude-sonnet-4-6", "provider_default", "0", None),
+        ("claude-sonnet-4-6", "high", None, "high"),
+        ("claude-haiku-4-5-20251001", "off", "0", None),
+        ("claude-haiku-4-5-20251001", "provider_default", "0", None),
+        ("claude-haiku-4-5-20251001", "high", "12288", None),
+        ("claude-sonnet-5", "off", "0", None),
+        ("claude-sonnet-5", "provider_default", None, None),
+        ("claude-sonnet-5-5", "provider_default", None, None),
+    ],
+)
+def test_cli_honors_transport_reasoning_choices(
+    monkeypatch, model, choice, expected_budget, expected_effort
+):
+    from agent_core.core.impl.llm.reasoning_wire import for_anthropic
+    from agent_core.core.models.reasoning import ReasoningChoice, resolve_reasoning
+
+    run_cli = claude_code.run_cli
+    connected(monkeypatch)
+    monkeypatch.setattr(claude_code, "run_cli", run_cli)
+    # Standalone CLI preferences must not override this request's choice.
+    monkeypatch.setenv("MAX_THINKING_TOKENS", "0")
+    monkeypatch.setenv("CLAUDE_CODE_EFFORT_LEVEL", "low")
+    monkeypatch.setenv("CLAUDE_CODE_DISABLE_ADAPTIVE_THINKING", "1")
+    monkeypatch.setattr(claude_code, "cli_command", lambda: ["claude"])
+    calls = []
+
+    def run(args, **kwargs):
+        calls.append((args, kwargs["env"]))
+        return SimpleNamespace(
+            returncode=0,
+            stdout=json.dumps({"type": "result", "result": "OK"}),
+        )
+
+    monkeypatch.setattr(claude_code.subprocess, "run", run)
+    applied = for_anthropic(
+        resolve_reasoning("anthropic", model, "subscription", ReasoningChoice(choice)),
+        16384,
+    )
+    ClaudeCodeClient().create(
+        model=model,
+        messages=[{"role": "user", "content": "hi"}],
+        max_tokens=applied.output_cap,
+        **applied.fields,
+    )
+    args, env = calls[0]
+    assert env.get("MAX_THINKING_TOKENS") == expected_budget
+    assert "CLAUDE_CODE_EFFORT_LEVEL" not in env
+    assert "CLAUDE_CODE_DISABLE_ADAPTIVE_THINKING" not in env
+    effort = args[args.index("--effort") + 1] if "--effort" in args else None
+    assert effort == expected_effort
+
+
+@pytest.mark.parametrize(
+    "operation",
+    [
+        "get",
+        "save",
+        "image_rollback",
+        "video_rollback",
+        "connect",
+        "complete",
+        "ollama",
+        "pull",
+    ],
+)
+def test_browser_subscription_checks_run_off_the_event_loop(monkeypatch, operation):
+    from app.ui_layer.adapters import browser_adapter
+    from app.ui_layer.settings import model_settings
+    from app.ui_layer import local_llm_setup
+
+    connected(monkeypatch)
+    status_threads = []
+    reinit_threads = []
+    sent = []
+
+    def status():
+        status_threads.append(threading.get_ident())
+        return {"connected": True}
+
+    def reinitialize(provider):
+        reinit_threads.append(threading.get_ident())
+        return True
+
+    async def broadcast(message):
+        sent.append(message)
+
+    async def connect(provider):
+        return True, "Connected"
+
+    async def pull(*args, **kwargs):
+        return {"success": True}
+
+    monkeypatch.setattr(claude_code, "auth_status", status)
+    monkeypatch.setattr(model_settings, "_load_settings", lambda: {})
+    monkeypatch.setattr(model_settings, "_save_settings", lambda settings: True)
+    monkeypatch.setattr("app.config.reload_settings", lambda: None)
+    monkeypatch.setattr("app.config.get_image_gen_provider", lambda: "openai")
+    monkeypatch.setattr("app.config.get_image_gen_model", lambda: None)
+    monkeypatch.setattr("app.config.get_video_gen_provider", lambda: "gemini")
+    monkeypatch.setattr("app.config.get_video_gen_model", lambda: None)
+    monkeypatch.setattr(browser_adapter, "connect_subscription_async", connect)
+    monkeypatch.setattr(
+        browser_adapter, "complete_subscription", lambda *args: (True, "Connected")
+    )
+    monkeypatch.setattr(
+        browser_adapter,
+        "get_ollama_models",
+        lambda **kwargs: {"success": True, "models": []},
+    )
+    monkeypatch.setattr(local_llm_setup, "pull_ollama_model", pull)
+    adapter = object.__new__(browser_adapter.BrowserAdapter)
+    adapter._broadcast = broadcast
+    adapter._controller = SimpleNamespace(
+        agent=SimpleNamespace(
+            reinitialize_llm=reinitialize,
+            reinitialize_image_gen=lambda provider: False,
+            reinitialize_video_gen=lambda provider: False,
+        )
+    )
+
+    async def run():
+        loop_thread = threading.get_ident()
+        if operation == "get":
+            await adapter._handle_model_settings_get()
+        elif operation == "save":
+            await adapter._handle_model_settings_update(
+                {"llmModel": "claude-sonnet-4-6"}
+            )
+        elif operation == "image_rollback":
+            await adapter._handle_model_settings_update({"imageGenProvider": "openai"})
+        elif operation == "video_rollback":
+            await adapter._handle_model_settings_update({"videoGenProvider": "gemini"})
+        elif operation == "connect":
+            await adapter._handle_model_subscription_connect("anthropic")
+        elif operation == "complete":
+            await adapter._handle_model_subscription_complete("anthropic", "code", None)
+        elif operation == "ollama":
+            await adapter._handle_ollama_models_get()
+        elif operation == "pull":
+            await adapter._handle_local_llm_pull_model("test-model")
+        assert status_threads
+        assert all(thread != loop_thread for thread in status_threads)
+        assert all(thread == loop_thread for thread in reinit_threads)
+
+    asyncio.run(run())
+    assert sent[-1]["data"]["success"]
+    if operation in ("image_rollback", "video_rollback"):
+        assert len(status_threads) == 2
+        assert sent[-1]["data"]["warning"]
+    elif operation in ("connect", "complete"):
+        assert sent[-1]["data"]["active_provider"] == "anthropic"
+        assert len(reinit_threads) == 1
+
+
+def test_onboarding_uses_saved_connection_without_a_cli_status_check(monkeypatch):
+    from app.onboarding.interfaces.steps import ApiKeyStep
+    from app.ui_layer.onboarding.controller import OnboardingFlowController
+
+    connected(monkeypatch)
+    monkeypatch.setattr(
+        claude_code,
+        "auth_status",
+        lambda: pytest.fail("Blocking CLI status in onboarding"),
+    )
+    assert ApiKeyStep("anthropic").validate("") == (True, None)
+    assert OnboardingFlowController._subscription_connected("anthropic")
+    monkeypatch.setattr(claude_code, "has_credential", lambda: False)
+    assert not ApiKeyStep("anthropic").validate("")[0]
+    assert not OnboardingFlowController._subscription_connected("anthropic")
+
+
+def test_onboarding_settings_updates_can_skip_unused_live_status(monkeypatch):
+    from app.ui_layer.settings import model_settings
+
+    connected(monkeypatch)
+    monkeypatch.setattr(model_settings, "_load_settings", lambda: {})
+    monkeypatch.setattr(model_settings, "_save_settings", lambda settings: True)
+    monkeypatch.setattr("app.config.reload_settings", lambda: None)
+    monkeypatch.setattr(
+        claude_code,
+        "auth_status",
+        lambda: pytest.fail("Unused CLI status in onboarding"),
+    )
+    result = model_settings.update_model_settings(
+        image_gen_provider="openai", include_subscription_status=False
+    )
+    assert result["success"]
+    assert result["image_gen_provider"] == "openai"

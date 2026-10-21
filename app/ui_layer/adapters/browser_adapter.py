@@ -2935,7 +2935,7 @@ A quick Q&A will now begin to understand your objectives to serve you better:"""
             try:
                 from app.ui_layer.settings.model_settings import get_model_settings
 
-                settings_data = get_model_settings()
+                settings_data = await asyncio.to_thread(get_model_settings)
                 base_url = settings_data.get("base_urls", {}).get("remote")
             except Exception:
                 pass
@@ -6243,7 +6243,8 @@ A quick Q&A will now begin to understand your objectives to serve you better:"""
                 prev_video_gen_model = _get_vg_model()
 
             # Step 3: Now save settings (validation and connection test passed)
-            result = update_model_settings(
+            result = await asyncio.to_thread(
+                update_model_settings,
                 llm_provider=new_provider,
                 vlm_provider=vlm_provider,
                 image_gen_provider=image_gen_provider,
@@ -6295,7 +6296,8 @@ A quick Q&A will now begin to understand your objectives to serve you better:"""
                 else:
                     # Roll persisted image-gen settings back to the previous
                     # (still-live) values to avoid a settings/interface mismatch.
-                    update_model_settings(
+                    await asyncio.to_thread(
+                        update_model_settings,
                         image_gen_provider=prev_image_gen_provider,
                         image_gen_model=prev_image_gen_model,
                     )
@@ -6321,7 +6323,8 @@ A quick Q&A will now begin to understand your objectives to serve you better:"""
                         f"[BROWSER] Video gen reinitialized with provider: {video_gen_provider}"
                     )
                 else:
-                    update_model_settings(
+                    await asyncio.to_thread(
+                        update_model_settings,
                         video_gen_provider=prev_video_gen_provider,
                         video_gen_model=prev_video_gen_model,
                     )
@@ -6417,7 +6420,7 @@ A quick Q&A will now begin to understand your objectives to serve you better:"""
         """Fetch available models from Ollama and broadcast to frontend."""
         try:
             if not base_url:
-                settings_data = get_model_settings()
+                settings_data = await asyncio.to_thread(get_model_settings)
                 base_url = settings_data.get("base_urls", {}).get("remote")
             result = await asyncio.to_thread(get_ollama_models, base_url=base_url)
             await self._broadcast({"type": "ollama_models_get", "data": result})
@@ -6572,7 +6575,9 @@ A quick Q&A will now begin to understand your objectives to serve you better:"""
         """
         try:
             success, message = await connect_subscription_async(provider)
-            active_provider = self._activate_provider_via_settings(success, provider)
+            active_provider = await self._activate_provider_via_settings(
+                success, provider
+            )
             # Claude's status runs its CLI, so keep it off the event loop.
             status_payload = await asyncio.to_thread(get_subscription_status, provider)
             await self._broadcast(
@@ -6600,7 +6605,7 @@ A quick Q&A will now begin to understand your objectives to serve you better:"""
                 }
             )
 
-    def _activate_provider_via_settings(
+    async def _activate_provider_via_settings(
         self, connect_success: bool, provider: str
     ) -> Optional[str]:
         """Reuse the manual-Save path to make ``provider`` the active LLM.
@@ -6616,7 +6621,7 @@ A quick Q&A will now begin to understand your objectives to serve you better:"""
         if not connect_success:
             return None
         try:
-            update_model_settings(llm_provider=provider)
+            await asyncio.to_thread(update_model_settings, llm_provider=provider)
             self._controller.agent.reinitialize_llm(provider)
             logger.info(f"[BROWSER] LLM reinitialized with provider: {provider}")
             return provider
@@ -6760,7 +6765,9 @@ A quick Q&A will now begin to understand your objectives to serve you better:"""
             success, message = await asyncio.to_thread(
                 complete_subscription, provider, code, attempt_id
             )
-            active_provider = self._activate_provider_via_settings(success, provider)
+            active_provider = await self._activate_provider_via_settings(
+                success, provider
+            )
             await self._broadcast(
                 {
                     "type": "model_subscription_complete",

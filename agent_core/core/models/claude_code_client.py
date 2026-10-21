@@ -14,6 +14,7 @@ import tempfile
 from pathlib import Path
 from types import SimpleNamespace
 
+from agent_core.core.models.reasoning import reasoning_options
 from craftos_integrations.llm_oauth import claude_code
 
 
@@ -71,7 +72,16 @@ class ClaudeCodeClient:
             "message": {"role": "user", "content": _content(messages)},
         }
         env = {"CLAUDE_CODE_MAX_OUTPUT_TOKENS": str(max_tokens)}
-        if thinking and thinking.get("type") == "disabled":
+        # The Messages API omits thinking for Off on Claude 4.x; the CLI
+        # enables it by default. Use the same model rules as the transport
+        # so models whose provider default includes thinking keep it.
+        options = reasoning_options("anthropic", model, "subscription")
+        omitted_means_off = (
+            thinking is None
+            and options is not None
+            and options.provider_default == "off"
+        )
+        if omitted_means_off or (thinking and thinking.get("type") == "disabled"):
             env["MAX_THINKING_TOKENS"] = "0"
         elif thinking and thinking.get("budget_tokens") is not None:
             env["MAX_THINKING_TOKENS"] = str(thinking["budget_tokens"])

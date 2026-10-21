@@ -56,7 +56,9 @@ def profile_directory() -> Path:
 def _native_install() -> Path:
     """Where the native installer puts ``claude``. An app started before the
     install still has the old PATH, so this location is checked as well."""
-    return Path.home() / ".local" / "bin" / ("claude.exe" if os.name == "nt" else "claude")
+    return (
+        Path.home() / ".local" / "bin" / ("claude.exe" if os.name == "nt" else "claude")
+    )
 
 
 def cli_command() -> list[str]:
@@ -91,6 +93,10 @@ def cli_environment() -> Dict[str, str]:
         "CLAUDE_CODE_USE_FOUNDRY",
         "CLAUDECODE",
         "CLAUDE_CODE_ENTRYPOINT",
+        # CraftBot's per-request reasoning choice owns these settings.
+        "MAX_THINKING_TOKENS",
+        "CLAUDE_CODE_EFFORT_LEVEL",
+        "CLAUDE_CODE_DISABLE_ADAPTIVE_THINKING",
     ):
         env.pop(name, None)
     env["CLAUDE_CONFIG_DIR"] = str(profile_directory())
