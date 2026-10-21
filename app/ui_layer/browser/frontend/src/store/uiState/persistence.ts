@@ -86,6 +86,9 @@ export function createUiPersistenceMiddleware(storages: UiStorages = uiStorages)
       if (uiStateChanged.match(action)) {
         const { key, lifetime, value } = action.payload
         persister.enqueue(key, lifetime, value)
+        // Read markers are discrete acknowledgements, not continuous UI
+        // changes. Do not leave them waiting in the coalescing timer.
+        if (key === 'chat.lastSeenMessageIds') persister.flush()
       }
       return result
     }
