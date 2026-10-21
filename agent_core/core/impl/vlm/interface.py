@@ -21,7 +21,13 @@ from typing import Any, Dict, Optional
 
 import requests
 
+from agent_core.core.impl.llm import reasoning_wire
 from agent_core.core.impl.llm.cache import get_cache_config, get_cache_metrics
+from agent_core.core.models.reasoning import (
+    ReasoningChoice,
+    ReasoningDecision,
+    resolve_reasoning,
+)
 from agent_core.utils.token import billable_tokens
 from agent_core.core.hooks import (
     GetTokenCountHook,
@@ -52,6 +58,13 @@ class VLMInterface:
     """
 
     _CODE_BLOCK_RE = re.compile(r"^```(?:\w+)?\s*|\s*```$", re.MULTILINE)
+
+    #: Output-token cap of a vision request, before reasoning raises it.
+    _MAX_TOKENS = 2048
+
+    #: "subscription" when the factory authenticated with an OAuth bearer
+    #: (selects the reasoning table's subscription surface), else "api_key".
+    _auth_mode: str = "api_key"
 
     def __init__(
         self,
@@ -87,7 +100,7 @@ class VLMInterface:
         from app.models.types import InterfaceType
         from agent_core.core.models.model_registry import MODEL_REGISTRY
 
-        # Providers like DeepSeek have VLM=None in the registry. Initializing
+        # Providers like Groq have VLM=None in the registry. Initializing
         # them would raise inside ModelFactory and crash the backend at startup.
         # Set up an uninitialized state instead — VLM actions then surface a
         # clean "VLM not available" error to the event stream.
@@ -119,6 +132,7 @@ class VLMInterface:
         self._anthropic_client = ctx.get("anthropic_client")
         self._bedrock_client = ctx.get("bedrock_client")
         self._initialized = ctx.get("initialized", False)
+        self._auth_mode = ctx.get("auth_mode", "api_key")
 
         if ctx["byteplus"]:
             self.api_key = ctx["byteplus"]["api_key"]
@@ -194,6 +208,7 @@ class VLMInterface:
             self._anthropic_client = ctx.get("anthropic_client")
             self._bedrock_client = ctx.get("bedrock_client")
             self._initialized = ctx.get("initialized", False)
+            self._auth_mode = ctx.get("auth_mode", "api_key")
 
             if ctx["byteplus"]:
                 self.api_key = ctx["byteplus"]["api_key"]
@@ -281,11 +296,10 @@ class VLMInterface:
             _profile = get_registry().get(self.provider)
             _wire = _profile.wire if _profile is not None else "chat_completions"
 
-            if self.provider == "deepseek":
-                raise RuntimeError(
-                    "DeepSeek does not support vision/VLM. Use a different provider for image description."
-                )
-            elif self.provider == "remote":
+            # DeepSeek used to be refused here; deepseek-flash (V4.1 Flash)
+            # takes image_url parts (https://api-docs.deepseek.com/guides/vision),
+            # so it falls through to the OpenAI-compatible path below.
+            if self.provider == "remote":
                 response = self._ollama_describe_bytes(
                     image_bytes, system_prompt, user_prompt
                 )
@@ -542,6 +556,23 @@ class VLMInterface:
         )
         return synthesis
 
+    def _reasoning(self) -> Optional[ReasoningDecision]:
+        """The reasoning decision a vision request carries.
+
+        Vision requests ask for the provider's default reasoning, so a model
+        without a rule in agent_core/core/models/reasoning.py keeps the
+        request it always had. A model's rule still applies its
+        consequences: temperature is dropped where the model rejects it,
+        and the output cap is raised where the model reasons by default,
+        because reasoning tokens count against it.
+        """
+        return resolve_reasoning(
+            self.provider,
+            self.model,
+            self._auth_mode,
+            ReasoningChoice.PROVIDER_DEFAULT,
+        )
+
     def _openai_describe_bytes(
         self, image_bytes: bytes, sys: str | None, usr: str, json_mode: bool = True
     ) -> Dict[str, Any]:
@@ -570,25 +601,36 @@ class VLMInterface:
         # Same per-profile request policies as the LLM chat_completions
         # transport: temperature via resolve_temperature (OpenAI and
         # Kimi/Moonshot omit the field — their reasoning models reject an
-        # explicit value); response_format json_object omitted for providers
-        # that reject it (Perplexity/LM Studio); max-tokens field name via
-        # profile.uses_max_completion_tokens.
+        # explicit value) and the model's reasoning rule; response_format
+        # json_object omitted for providers that reject it (Perplexity/LM
+        # Studio); max-tokens value capped to profile.max_output_tokens and
+        # field name via profile.uses_max_completion_tokens.
         from agent_core.core.models.registry import get_registry
         from agent_core.core.models.provider_config import (
             OMIT_TEMPERATURE,
             resolve_temperature,
         )
 
+        applied = reasoning_wire.for_chat_completions(
+            self._reasoning(), self._MAX_TOKENS
+        )
         _profile = get_registry().get(self.provider)
         _temp = resolve_temperature(_profile, self.temperature)
-        if _temp is not OMIT_TEMPERATURE:
+        if _temp is not OMIT_TEMPERATURE and applied.send_temperature:
             request_kwargs["temperature"] = _temp
+        reasoning_kwargs, reasoning_extra_body = applied.fields
+        request_kwargs.update(reasoning_kwargs)
+        if reasoning_extra_body:
+            request_kwargs["extra_body"] = reasoning_extra_body
         if json_mode and (_profile is None or _profile.supports_json_object):
             request_kwargs["response_format"] = {"type": "json_object"}
+        max_tokens = applied.output_cap
+        if _profile is not None and _profile.max_output_tokens:
+            max_tokens = min(max_tokens, _profile.max_output_tokens)
         if _profile is not None and _profile.uses_max_completion_tokens:
-            request_kwargs["max_completion_tokens"] = 2048
+            request_kwargs["max_completion_tokens"] = max_tokens
         else:
-            request_kwargs["max_tokens"] = 2048
+            request_kwargs["max_tokens"] = max_tokens
 
         response = self.client.chat.completions.create(**request_kwargs)
         if not response.choices:
@@ -792,9 +834,10 @@ class VLMInterface:
             },
         ]
 
+        applied = reasoning_wire.for_anthropic(self._reasoning(), self._MAX_TOKENS)
         message_kwargs = {
             "model": self.model,
-            "max_tokens": 2048,
+            "max_tokens": applied.output_cap,
             "messages": [{"role": "user", "content": message_content}],
         }
 
@@ -810,7 +853,12 @@ class VLMInterface:
             else:
                 message_kwargs["system"] = sys
 
-        message_kwargs["extra_body"] = {"temperature": self.temperature}
+        message_kwargs.update(applied.fields)
+
+        # Claude 4.7+ rejects any non-default temperature (as does thinking
+        # on 4.5/4.6), so the model's rule drops it there.
+        if applied.send_temperature:
+            message_kwargs["extra_body"] = {"temperature": self.temperature}
 
         response = self._anthropic_client.messages.create(**message_kwargs)
 
@@ -912,14 +960,21 @@ class VLMInterface:
             {"text": usr},
         ]
 
+        # Claude on Converse takes the Messages-API thinking/effort keys
+        # through additionalModelRequestFields, with the same cap and
+        # temperature consequences.
+        applied = reasoning_wire.for_anthropic(self._reasoning(), self._MAX_TOKENS)
+        inference_config: Dict[str, Any] = {"maxTokens": applied.output_cap}
+        if applied.send_temperature:
+            inference_config["temperature"] = self.temperature
+
         converse_kwargs: Dict[str, Any] = {
             "modelId": self.model,
             "messages": [{"role": "user", "content": message_content}],
-            "inferenceConfig": {
-                "maxTokens": 2048,
-                "temperature": self.temperature,
-            },
+            "inferenceConfig": inference_config,
         }
+        if applied.fields:
+            converse_kwargs["additionalModelRequestFields"] = applied.fields
 
         if sys:
             use_cache = (

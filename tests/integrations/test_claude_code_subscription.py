@@ -765,7 +765,7 @@ def test_browser_subscription_checks_run_off_the_event_loop(monkeypatch, operati
     monkeypatch.setattr("app.config.reload_settings", lambda: None)
     monkeypatch.setattr("app.config.get_image_gen_provider", lambda: "openai")
     monkeypatch.setattr("app.config.get_image_gen_model", lambda: None)
-    monkeypatch.setattr("app.config.get_video_gen_provider", lambda: "gemini")
+    monkeypatch.setattr("app.config.get_video_gen_provider", lambda: "byteplus")
     monkeypatch.setattr("app.config.get_video_gen_model", lambda: None)
     monkeypatch.setattr(browser_adapter, "connect_subscription_async", connect)
     monkeypatch.setattr(
@@ -798,7 +798,7 @@ def test_browser_subscription_checks_run_off_the_event_loop(monkeypatch, operati
         elif operation == "image_rollback":
             await adapter._handle_model_settings_update({"imageGenProvider": "openai"})
         elif operation == "video_rollback":
-            await adapter._handle_model_settings_update({"videoGenProvider": "gemini"})
+            await adapter._handle_model_settings_update({"videoGenProvider": "byteplus"})
         elif operation == "connect":
             await adapter._handle_model_subscription_connect("anthropic")
         elif operation == "complete":

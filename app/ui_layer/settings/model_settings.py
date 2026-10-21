@@ -216,7 +216,7 @@ def get_model_settings(*, include_subscription_status: bool = True) -> Dict[str,
             if MODEL_REGISTRY.get(vlm_provider, {}).get(InterfaceType.VIDEO_GEN):
                 video_gen_provider = vlm_provider
             else:
-                video_gen_provider = "gemini"
+                video_gen_provider = "byteplus"
         video_gen_model = model_settings.get("video_gen_model") or MODEL_REGISTRY.get(
             video_gen_provider, {}
         ).get(InterfaceType.VIDEO_GEN)

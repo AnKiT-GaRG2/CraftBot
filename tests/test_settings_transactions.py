@@ -366,7 +366,7 @@ def test_failed_media_activation_rolls_back_before_next_save(
     async def run():
         first = asyncio.create_task(
             adapter._handle_model_settings_update(
-                {provider_key: "gemini" if kind == "image" else "openai"}
+                {provider_key: "gemini" if kind == "image" else "byteplus"}
             )
         )
         try:
@@ -383,5 +383,7 @@ def test_failed_media_activation_rolls_back_before_next_save(
 
     asyncio.run(run())
     saved = json.loads(settings_path.read_text())["model"]
-    assert saved[f"{kind}_gen_provider"] == ("openai" if kind == "image" else "gemini")
+    # BytePlus is the only provider with a video model, so the video save
+    # rolls back to it as well.
+    assert saved[f"{kind}_gen_provider"] == ("openai" if kind == "image" else "byteplus")
     assert saved["llm_provider"] == adapter._controller.agent.provider == "openai"
