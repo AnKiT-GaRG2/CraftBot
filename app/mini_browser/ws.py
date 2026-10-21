@@ -136,6 +136,7 @@ _MAX_VAULT_USERNAME_CHARS = 1024
 _MAX_VAULT_PASSWORD_CHARS = 4096
 _MAX_VAULT_NOTE_CHARS = 16384
 _MAX_VAULT_LABEL_CHARS = 1024
+_MAX_VAULT_CHOICE_CHARS = 16  # kind / group ids such as "secure_note"
 _VAULT_CODES = frozenset(
     {
         "MINI_BROWSER_VAULT_UNREADABLE",
@@ -1648,8 +1649,8 @@ class MiniBrowserWS:
         )
 
     async def _handle_vault_add(self, ws: Any, data: Dict[str, Any]) -> None:
-        kind = _vault_text(data, "kind", 16, required=False) or "login"
-        metadata = {key: _vault_text(data, key, 16, required=False)
+        kind = _vault_text(data, "kind", _MAX_VAULT_CHOICE_CHARS, required=False) or "login"
+        metadata = {key: _vault_text(data, key, _MAX_VAULT_CHOICE_CHARS, required=False)
                     for key in ("kind", "group") if key in data}
         site = _vault_text(data, "site", _MAX_VAULT_SITE_CHARS, required=kind == "login") or ""
         username = _vault_text(
@@ -1670,7 +1671,7 @@ class MiniBrowserWS:
 
     async def _handle_vault_update(self, ws: Any, data: Dict[str, Any]) -> None:
         entry_id = _short_id(data.get("id"), "id", required=True)
-        metadata = {key: _vault_text(data, key, 16, required=False)
+        metadata = {key: _vault_text(data, key, _MAX_VAULT_CHOICE_CHARS, required=False)
                     for key in ("kind", "group") if key in data}
         site = _vault_text(data, "site", _MAX_VAULT_SITE_CHARS, required=False)
         username = _vault_text(

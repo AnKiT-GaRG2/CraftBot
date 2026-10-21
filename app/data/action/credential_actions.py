@@ -50,7 +50,6 @@ async def credential_list_api_keys(input_data: dict) -> dict:
     execution_mode="internal",
     action_sets=["core"],
     parallelizable=False,
-    irreversible=True,
     input_schema={
         "credential_id": {"type": "string", "description": "Saved API-key ID from credential_list_api_keys; never the key value."},
         "url": {"type": "string", "description": "Absolute API URL on the key's saved website and port."},

@@ -12,11 +12,12 @@ from urllib.parse import quote
 import pytest
 import requests
 
-from app.credentials import CredentialVault, Secret
+from app.credentials import CredentialVault, Secret, VaultError
 from app.credentials import api_request as api
 from app.logger import logger
 
 KEY = 'sk-test-only+api/key&2026='
+TEXT = 'Café crème'
 
 
 @pytest.fixture
@@ -40,6 +41,17 @@ def server():
                 self.send_response(302)
                 self.send_header('Location', '/must-not-follow')
                 self.end_headers()
+                return
+            if self.path == '/not-modified':
+                self.send_response(304)
+                self.end_headers()
+                return
+            if self.path in ('/text', '/latin1'):
+                latin1 = self.path == '/latin1'
+                self.send_response(200)
+                self.send_header('Content-Type', 'text/plain; charset=ISO-8859-1' if latin1 else 'text/plain')
+                self.end_headers()
+                self.wfile.write(TEXT.encode('latin-1' if latin1 else 'utf-8'))
                 return
             if self.path == '/large':
                 body = ('x' * api._MAX_BODY_BYTES + KEY).encode()
@@ -151,6 +163,20 @@ def test_redirect_never_follows_or_returns_location(vault, server):
     assert 'Location' not in json.dumps(result)
 
 
+def test_not_modified_is_returned_not_refused_as_redirect(vault, server):
+    url, _ = server
+    result = run({'credential_id': saved(vault, url)['id'], 'url': url + '/not-modified'})
+    assert result['status'] == 'success'
+    assert result['status_code'] == 304
+
+
+@pytest.mark.parametrize('path', ['/text', '/latin1'])
+def test_text_response_uses_declared_charset_else_utf8(vault, server, path):
+    url, _ = server
+    result = run({'credential_id': saved(vault, url)['id'], 'url': url + path})
+    assert result['body'] == TEXT
+
+
 def test_oversize_response_returns_no_partial_value(vault, server):
     url, _ = server
     result = run({'credential_id': saved(vault, url)['id'], 'url': url + '/large'})
@@ -170,6 +196,14 @@ def test_wrong_destination_refused_before_network(vault, monkeypatch, target):
     result = run({'credential_id': entry['id'], 'url': target})
     assert result['status'] == 'error'
     assert not calls
+
+
+def test_www_api_host_is_kept_and_matched_exactly(vault):
+    entry = saved(vault, 'https://www.api.example.test/v1')
+    assert entry['site'] == 'www.api.example.test'
+    assert vault.api_key_for_url(entry['id'], 'https://www.api.example.test/v1').reveal() == KEY
+    with pytest.raises(VaultError):
+        vault.api_key_for_url(entry['id'], 'https://api.example.test/v1')
 
 
 @pytest.mark.parametrize('kind,site', [('login', 'api.example.test'), ('secure_note', ''), ('api_key', '')])
@@ -253,6 +287,9 @@ def test_actions_load_and_executor_stripped_source_uses_real_backend(vault, serv
         assert impl.metadata.action_sets == ['core']
         assert impl.metadata.mode == 'ALL'
         assert impl.metadata.execution_mode == 'internal'
+        # Irreversible actions replay a stored output for identical calls,
+        # which would hand the agent stale API reads.
+        assert not impl.metadata.irreversible
         namespace = {'input_data': data, 'json': json, 'asyncio': asyncio}
         before = set(namespace)
         exec(registry_instance.find_action_by_name(name)['code'], namespace)

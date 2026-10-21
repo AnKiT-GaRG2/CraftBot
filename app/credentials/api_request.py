@@ -9,10 +9,12 @@ from __future__ import annotations
 
 import asyncio
 import base64
+import codecs
 import html
 import json
 import math
 import re
+from email.message import Message
 from urllib.parse import quote, quote_plus, urlsplit
 
 import requests
@@ -65,7 +67,28 @@ def _valid_header(name: object, value: object) -> bool:
             and not any(ord(c) < 32 or ord(c) == 127 for c in value))
 
 
+def _charset(content_type: str) -> str:
+    """The charset the response declares, else UTF-8.
+
+    requests assumes ISO-8859-1 for any text/* response without a charset,
+    which garbles the UTF-8 that APIs send in practice.
+    """
+    message = Message()
+    message["Content-Type"] = content_type
+    charset = message.get_content_charset() or "utf-8"
+    try:
+        return codecs.lookup(charset).name
+    except LookupError:
+        return "utf-8"
+
+
 def _redact(text: str, secret: Secret) -> str:
+    # Known limitation: this is plain substring replacement, so a short key
+    # also matches inside unrelated words and JSON field names (key "abc"
+    # turns "tabcount" into "t[redacted]ount"). Accepted for now because
+    # over-redacting is safer than leaking and real API keys are long. A fix
+    # would replace only whole-token matches, or refuse keys below a minimum
+    # length when they are saved.
     value = secret.reveal()
     raw = value.encode("utf-8")
     variants = {
@@ -151,7 +174,9 @@ def _request(data: dict) -> dict:
             secret = get_vault().api_key_for_url(credential_id, prepared.url)
             prepared.headers[header_name] = ("Bearer " if auth_type == "bearer" else "") + secret.reveal()
             with session.send(prepared, timeout=timeout, allow_redirects=False, verify=True, stream=True) as response:
-                if 300 <= response.status_code < 400:
+                # Real redirects only (a Location to follow): a 304 Not
+                # Modified is an ordinary answer to a conditional request.
+                if response.is_redirect:
                     return _error("CREDENTIAL_REDIRECT_REFUSED", "Redirect refused. Use a direct URL on the saved website.") | {"status_code": response.status_code}
                 body = bytearray()
                 for chunk in response.iter_content(chunk_size=16384):
@@ -159,10 +184,11 @@ def _request(data: dict) -> dict:
                     if len(body) > _MAX_BODY_BYTES:
                         # Never return a truncated value that could expose half a key.
                         return _error("CREDENTIAL_RESPONSE_TOO_LARGE", "Response exceeded 256 KiB; no body was returned.")
-                content_type = response.headers.get("Content-Type", "").split(";", 1)[0].lower()
+                content_type_header = response.headers.get("Content-Type", "")
+                content_type = content_type_header.split(";", 1)[0].lower()
                 if content_type and not (content_type.startswith("text/") or content_type.endswith(("json", "+json", "xml", "+xml"))):
                     return _error("CREDENTIAL_RESPONSE_TYPE", "Only text and JSON API responses are returned.")
-                text = _redact(bytes(body).decode(response.encoding or "utf-8", errors="replace"), secret)
+                text = _redact(bytes(body).decode(_charset(content_type_header), errors="replace"), secret)
                 return {
                     "status": "success" if response.status_code < 400 else "error",
                     "status_code": response.status_code,

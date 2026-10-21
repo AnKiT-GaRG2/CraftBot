@@ -327,14 +327,15 @@ class _DpapiBackend(NamedTuple):
 # ════════════════════════════════════════════════════════════════════════
 
 
-def normalize_site(text: str) -> str:
+def normalize_site(text: str, *, keep_www: bool = False) -> str:
     """Canonical ``host[:port]`` for a site the user types or pastes.
 
     Accepts a bare host or an http(s) URL, then:
 
     - strips the scheme, path, query, userinfo, one trailing dot and a
       leading ``www.`` (``www.example.com`` and ``example.com`` are one site,
-      see :func:`site_matches`);
+      see :func:`site_matches`); ``keep_www`` keeps the ``www.``, for API
+      keys, which match their exact host;
     - lowercases the host and converts Unicode names to IDNA (UTS #46
       non-transitional, the same as Chromium);
     - drops the default ports 80/443 and wraps IPv6 hosts in brackets.
@@ -342,7 +343,7 @@ def normalize_site(text: str) -> str:
     Raises :class:`VaultError` (``CODE_INVALID``) for empty input, spaces,
     other schemes, bad ports, and single-word hosts other than ``localhost``.
     """
-    return _format_site(*_site_parts(text))
+    return _format_site(*_site_parts(text, keep_www=keep_www))
 
 
 def site_matches(saved_site: str, url: str) -> bool:
@@ -366,7 +367,7 @@ def site_matches(saved_site: str, url: str) -> bool:
     return saved is not None and target is not None and _matches(saved, target)
 
 
-def _site_parts(text: Any) -> Tuple[str, Optional[int]]:
+def _site_parts(text: Any, *, keep_www: bool = False) -> Tuple[str, Optional[int]]:
     """(host, port) of a saved site; raises VaultError(CODE_INVALID)."""
     if not isinstance(text, str):
         raise _invalid(_MSG_SITE_EMPTY)
@@ -402,7 +403,7 @@ def _site_parts(text: Any) -> Tuple[str, Optional[int]]:
     is_ip = _is_ip(host)
     if not is_ip and "." not in host and host != "localhost":
         raise _invalid(_MSG_SITE_DOTLESS)
-    if not is_ip and host.startswith("www.") and "." in host[4:]:
+    if not keep_www and not is_ip and host.startswith("www.") and "." in host[4:]:
         host = host[4:]
     return host, port
 
@@ -431,10 +432,12 @@ def _site_as_url(value: str) -> str:
 
 
 @functools.lru_cache(maxsize=4096)
-def _saved_parts(site: str) -> Optional[Tuple[str, Optional[int]]]:
+def _saved_parts(
+    site: str, *, keep_www: bool = False
+) -> Optional[Tuple[str, Optional[int]]]:
     """Parsed stored site, or None when it no longer validates."""
     try:
-        return _site_parts(site)
+        return _site_parts(site, keep_www=keep_www)
     except VaultError:
         return None
 
@@ -717,7 +720,7 @@ class CredentialVault:
             entry = next((e for e in state.entries if e["id"] == target_id), None)
             if entry is None or entry.get("kind") != "api_key":
                 raise _invalid("Choose a saved API key.")
-            saved = _saved_parts(entry["site"])
+            saved = _saved_parts(entry["site"], keep_www=True)
             if saved is None:
                 raise _invalid("Add a website to this API key in Settings > Credentials first.")
             if host != saved[0] or target_port != (saved[1] or (443 if scheme == "https" else 80)):
@@ -976,12 +979,20 @@ def _clean_choice(value: Any, choices: frozenset[str], field: str) -> str:
     return value
 
 
+def _clean_site(site: Any, kind: str) -> str:
+    """Logins require a site and share it with its ``www.`` spelling; other
+    kinds may omit it and keep the exact host (see ``api_key_for_url``)."""
+    if kind != "login" and not site:
+        return ""
+    return normalize_site(site, keep_www=kind != "login")
+
+
 def _new_fields(
     site: Any, username: Any, password: Secret, label: Any,
     *, kind: str = "login", group: Optional[str] = None,
 ) -> _Entry:
     kind = _clean_choice(kind, CREDENTIAL_KINDS, "type")
-    clean_site = normalize_site(site) if kind == "login" or site else ""
+    clean_site = _clean_site(site, kind)
     clean_username = _clean_username(username) if kind == "login" or username else ""
     problem = _password_problem(password, kind)
     if problem:
@@ -1008,7 +1019,7 @@ def _changed_fields(
 ) -> _Entry:
     changes = _Entry()
     if site is not None:
-        changes["site"] = normalize_site(site) if kind == "login" or site else ""
+        changes["site"] = _clean_site(site, kind)
     if username is not None:
         changes["username"] = _clean_username(username) if kind == "login" or username else ""
     if password:  # None or "" keeps the current password
