@@ -3876,6 +3876,7 @@ UI in {project.path}/frontend/src/app/."""
 
         # Visible ⚡ event in the project feed — same channel as the factory's
         # status lines, so app-started agent work shows where builds do.
+        # A status line, not conversation: kept out of memory.
         try:
             from app.internal_action_interface import InternalActionInterface as I
             from agent_core.core.event_stream.event import EventType
@@ -3887,6 +3888,7 @@ UI in {project.path}/frontend/src/app/."""
                     event_type=EventType.AGENT_MESSAGE,
                     display_message=f"⚡ '{project.name}' fired trigger '{trigger_name}'",
                     task_id=session.id,
+                    to_memory=False,
                 )
         except Exception as e:
             logger.debug(f"[AGENT_APP:TRIGGERS] chat emit failed: {e}")

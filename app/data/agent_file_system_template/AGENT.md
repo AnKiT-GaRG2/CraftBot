@@ -932,10 +932,10 @@ longer a global EVENT.md at the `agent_file_system/` root.
 - Format: `[YYYY-MM-DD HH:MM:SS] [event_type]: payload`. Multi-line payloads continue on subsequent lines. Auto-rotated when the size threshold is exceeded.
 
 **EVENT_UNPROCESSED.md** — this session's staging buffer for events awaiting memory distillation.
-- Write access: EventStreamManager (filtered subset of EVENT.md events). Hard rule: DO NOT edit.
+- Write access: EventStreamManager (the user and agent messages from EVENT.md). Hard rule: DO NOT edit.
 - Read pattern: the memory processor aggregates every session's copy (oldest event first) into one staging file daily at 3am. See `## Memory`.
 - Cleared: this session's processed events are removed after each successful memory-processing run.
-- Filter: events of kind `action_start`, `action_end`, `todos`, `error`, `waiting_for_user`, `gui_action`, `agent reasoning`, `screen_description`, `relevant_memories` are NOT staged.
+- Filter: only user messages and agent messages (on every platform) are staged. Every other event (actions, errors, system notes, requirements, triggers, warnings) stays in EVENT.md only.
 - Skip flag: during memory-processing runs, `set_skip_unprocessed_logging(True)` prevents the run's own events from looping back. Reset automatically at run end.
 
 **NOTE.md**: your note for this session. You may freely read AND write it (the only per-session file you may write).
@@ -3287,7 +3287,7 @@ Code: [agent_core/core/impl/memory/manager.py](agent_core/core/impl/memory/manag
    deterministically into ENTITIES.md
 ```
 
-EVENT_UNPROCESSED.md filter (events NOT staged): `action_start`, `action_end`, `todos`, `error`, `waiting_for_user`, `gui_action`, `agent reasoning`, `screen_description`, `relevant_memories`. The pipeline focuses on user-facing dialogue and important state changes. See `## File System` for full details.
+EVENT_UNPROCESSED.md filter: only user messages and agent messages (on every platform) are staged; every other event stays in EVENT.md only. The pipeline distills the conversation itself. See `## File System` for full details.
 
 The distillation criteria (Future Utility Test + save/never-save lists) live in the memory-processor skill ([skills/memory-processor/SKILL.md](skills/memory-processor/SKILL.md)). Do NOT duplicate them elsewhere.
 
