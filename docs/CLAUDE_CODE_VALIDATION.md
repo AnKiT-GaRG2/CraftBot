@@ -30,7 +30,14 @@
   repository-wide Ruff lint, changed-file formatting, compilation and whitespace
   checks passed. The production build retains its existing bundle-size warning.
 - Bounded code review: both reported races are closed; no further code blockers
-  identified. Real-account acceptance remains the final merge gate, tracked below.
+  identified. GitHub reports the PR mergeable against `V1.4.4`; no CI checks
+  are configured/reported for this head, so the test evidence above is local.
+- Real-account acceptance was attempted, but the user could not sign in during
+  this pass. The pending validation CLI was stopped, the isolated private profile
+  was logged out and left without a connection flag, and standalone CLI login
+  remained connected. Authenticated login, live text/image inference and
+  authenticated logout/reconnect are **unverified**, not claimed as passing.
+  This is the only remaining acceptance item before a fully validated merge.
 
 ## Earlier review fixes: 21 October 2026
 
