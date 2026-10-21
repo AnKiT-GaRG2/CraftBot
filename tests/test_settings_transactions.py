@@ -1,7 +1,9 @@
 """Concurrent settings changes compose, and readers only see complete JSON."""
 
+import asyncio
 import json
 import threading
+from types import SimpleNamespace
 from concurrent.futures import ThreadPoolExecutor, TimeoutError as FutureTimeoutError
 
 import pytest
@@ -175,3 +177,211 @@ def test_concurrent_readers_never_observe_partial_json(settings_path):
         finally:
             stop.set()
         reader.result(timeout=5)
+
+
+@pytest.fixture
+def adapter(settings_path, monkeypatch):
+    from app.ui_layer.adapters import browser_adapter
+
+    monkeypatch.setattr(
+        browser_adapter, "validate_can_save", lambda **kwargs: {"can_save": True}
+    )
+    adapter = object.__new__(browser_adapter.BrowserAdapter)
+    agent = SimpleNamespace(provider="anthropic", activations=[])
+
+    def reinitialize(provider):
+        agent.provider = provider
+        agent.activations.append(provider)
+        return True
+
+    agent.reinitialize_llm = reinitialize
+    adapter._controller = SimpleNamespace(agent=agent)
+    adapter.sent = []
+
+    async def broadcast(message):
+        adapter.sent.append(message)
+
+    adapter._broadcast = broadcast
+    return adapter
+
+
+@pytest.mark.parametrize("second", ["save", "connect", "complete", "disconnect"])
+def test_slow_status_cannot_reorder_save_and_activation(
+    adapter, settings_path, monkeypatch, second
+):
+    """Exercise actual handlers, settings transactions and cross-client ordering."""
+    from app.ui_layer.adapters import browser_adapter
+
+    checking = threading.Event()
+    release = threading.Event()
+    calls = 0
+
+    def status():
+        nonlocal calls
+        calls += 1
+        if calls == 1:
+            checking.set()
+            assert release.wait(5)
+        return {"connected": True}
+
+    save_credential(
+        claude_code.CRED_FILE,
+        claude_code.ClaudeCodeConnection(profile_version=claude_code.PROFILE_VERSION),
+    )
+    monkeypatch.setattr(claude_code, "auth_status", status)
+
+    async def connect(provider):
+        return True, "Connected"
+
+    monkeypatch.setattr(browser_adapter, "connect_subscription_async", connect)
+    monkeypatch.setattr(
+        browser_adapter, "complete_subscription", lambda *args: (True, "Connected")
+    )
+    monkeypatch.setattr(
+        browser_adapter, "disconnect_subscription", lambda *args: (True, "Disconnected")
+    )
+
+    async def run():
+        first = asyncio.create_task(
+            adapter._handle_model_settings_update({"llmProvider": "openai"})
+        )
+        try:
+            assert await asyncio.to_thread(checking.wait, 5)
+            # The first provider must already be live while its status is blocked.
+            assert adapter._controller.agent.provider == "openai"
+            if second == "save":
+                await asyncio.wait_for(
+                    adapter._handle_model_settings_update({"llmProvider": "gemini"}), 2
+                )
+            elif second == "connect":
+                await asyncio.wait_for(
+                    adapter._handle_model_subscription_connect("anthropic"), 2
+                )
+            elif second == "complete":
+                await asyncio.wait_for(
+                    adapter._handle_model_subscription_complete(
+                        "anthropic", "code", None
+                    ),
+                    2,
+                )
+            else:
+                await asyncio.wait_for(
+                    adapter._handle_model_subscription_disconnect("openai"), 2
+                )
+        finally:
+            release.set()
+            await first
+
+    asyncio.run(run())
+    expected = {
+        "save": "gemini",
+        "connect": "anthropic",
+        "complete": "anthropic",
+        "disconnect": "openai",
+    }[second]
+    assert json.loads(settings_path.read_text())["model"]["llm_provider"] == expected
+    assert adapter._controller.agent.provider == expected
+    assert adapter._controller.agent.activations == ["openai", expected]
+    assert adapter.sent[-1]["data"]["llm_provider"] == expected
+    assert adapter.sent[-1]["data"]["subscription_oauth"]["anthropic"]["connected"]
+
+
+@pytest.mark.parametrize("operation", ["connect", "complete"])
+def test_disconnect_prevents_late_subscription_activation(
+    adapter, settings_path, monkeypatch, operation
+):
+    """Also cover the gap between credential completion and browser activation."""
+    from app.ui_layer.adapters import browser_adapter
+
+    ready = threading.Event()
+    release = threading.Event()
+
+    async def connect(provider):
+        ready.set()
+        assert await asyncio.to_thread(release.wait, 5)
+        return True, "Connected"
+
+    def complete(*args):
+        ready.set()
+        assert release.wait(5)
+        return True, "Connected"
+
+    monkeypatch.setattr(browser_adapter, "connect_subscription_async", connect)
+    monkeypatch.setattr(browser_adapter, "complete_subscription", complete)
+    monkeypatch.setattr(
+        browser_adapter, "disconnect_subscription", lambda *args: (True, "Disconnected")
+    )
+    monkeypatch.setattr(
+        browser_adapter,
+        "get_subscription_status",
+        lambda provider: {"connected": False},
+    )
+
+    async def run():
+        method = (
+            adapter._handle_model_subscription_connect("anthropic")
+            if operation == "connect"
+            else adapter._handle_model_subscription_complete("anthropic", "code", None)
+        )
+        pending = asyncio.create_task(method)
+        try:
+            assert await asyncio.to_thread(ready.wait, 5)
+            await adapter._handle_model_subscription_disconnect("anthropic")
+        finally:
+            release.set()
+            await pending
+
+    asyncio.run(run())
+    assert adapter._controller.agent.activations == ["anthropic"]  # Disconnect only
+    assert adapter.sent[-1]["data"]["active_provider"] is None
+    assert json.loads(settings_path.read_text())["model"]["llm_provider"] == "anthropic"
+
+
+@pytest.mark.parametrize("kind", ["image", "video"])
+def test_failed_media_activation_rolls_back_before_next_save(
+    adapter, settings_path, monkeypatch, kind
+):
+    from app.ui_layer.adapters import browser_adapter
+
+    entered = threading.Event()
+    release = threading.Event()
+    real_update = model_settings.update_model_settings
+    calls = 0
+
+    def update(**kwargs):
+        nonlocal calls
+        calls += 1
+        result = real_update(**kwargs)
+        if calls == 1:
+            entered.set()
+            assert release.wait(5)
+        return result
+
+    setattr(
+        adapter._controller.agent, f"reinitialize_{kind}_gen", lambda provider: False
+    )
+    monkeypatch.setattr(browser_adapter, "update_model_settings", update)
+    provider_key = f"{kind}GenProvider"
+
+    async def run():
+        first = asyncio.create_task(
+            adapter._handle_model_settings_update(
+                {provider_key: "gemini" if kind == "image" else "openai"}
+            )
+        )
+        try:
+            assert await asyncio.to_thread(entered.wait, 5)
+            second = asyncio.create_task(
+                adapter._handle_model_settings_update({"llmProvider": "openai"})
+            )
+            await asyncio.sleep(0)
+            assert not second.done()
+        finally:
+            release.set()
+            await first
+        await second
+
+    asyncio.run(run())
+    saved = json.loads(settings_path.read_text())["model"]
+    assert saved[f"{kind}_gen_provider"] == ("openai" if kind == "image" else "gemini")
+    assert saved["llm_provider"] == adapter._controller.agent.provider == "openai"

@@ -23,6 +23,7 @@ from agent_core.core.models.types import InterfaceType
 def isolated_connection(tmp_path, monkeypatch):
     monkeypatch.setattr(ConfigStore, "project_root", tmp_path)
     monkeypatch.setattr(claude_code, "_login_process", None)
+    monkeypatch.setattr(claude_code, "_login_generation", 0)
     # Never find the real CLI installed on the test machine.
     monkeypatch.setattr(claude_code, "_native_install", lambda: tmp_path / "no-claude")
 
@@ -193,7 +194,7 @@ def test_connect_waits_for_approval_in_the_cli_tab(monkeypatch, opened):
     ok, message = asyncio.run(tokens.connect("anthropic"))
     assert ok and "user@example.com" in message
     login = launched[0]
-    assert login.args == ["claude", "auth", "login", "--claudeai"]
+    assert login.args == ["claude", "auth", "login"]
     assert login.env["CLAUDE_CONFIG_DIR"] == str(claude_code.profile_directory())
     # The CLI opens the only tab, and no code passes through CraftBot.
     assert opened == [] and login.received == []
@@ -272,7 +273,7 @@ def test_settings_connect_button_flips_to_connected(monkeypatch):
 
     adapter._broadcast = broadcast
 
-    async def activate(ok, provider):
+    async def activate(ok, provider, **kwargs):
         return provider if ok else None
 
     adapter._activate_provider_via_settings = activate
@@ -813,7 +814,7 @@ def test_browser_subscription_checks_run_off_the_event_loop(monkeypatch, operati
     asyncio.run(run())
     assert sent[-1]["data"]["success"]
     if operation in ("image_rollback", "video_rollback"):
-        assert len(status_threads) == 2
+        assert len(status_threads) == 1
         assert sent[-1]["data"]["warning"]
     elif operation in ("connect", "complete"):
         assert sent[-1]["data"]["active_provider"] == "anthropic"
@@ -854,3 +855,171 @@ def test_onboarding_settings_updates_can_skip_unused_live_status(monkeypatch):
     )
     assert result["success"]
     assert result["image_gen_provider"] == "openai"
+
+
+@pytest.mark.parametrize(
+    "checkpoint", ["existing_login", "browser_wait", "approved_login"]
+)
+def test_disconnect_invalidates_every_login_phase(monkeypatch, checkpoint):
+    """Disconnect wins even after CLI exit or an existing-account status read."""
+    from craftos_integrations.credentials_store import save_credential
+
+    save_credential(
+        claude_code.CRED_FILE,
+        claude_code.ClaudeCodeConnection(profile_version=claude_code.PROFILE_VERSION),
+    )
+    reached = threading.Event()
+    release = threading.Event()
+    calls = 0
+    launched = []
+
+    def auth_status():
+        nonlocal calls
+        calls += 1
+        current = {"connected": checkpoint == "existing_login" or calls > 1}
+        if checkpoint == "existing_login" or calls > 1:
+            reached.set()
+            assert release.wait(5)
+        return current
+
+    def popen(args, **kwargs):
+        process = FakeLogin(args, **kwargs, outcome="abandon")
+        launched.append(process)
+        reached.set()
+        return process
+
+    monkeypatch.setattr(claude_code, "auth_status", auth_status)
+    monkeypatch.setattr(claude_code, "cli_command", lambda: ["claude"])
+    monkeypatch.setattr(claude_code.subprocess, "Popen", popen)
+
+    def logout(args, **kwargs):
+        assert all(process.poll() is not None for process in launched)
+        return SimpleNamespace(returncode=0, stdout='{"loggedIn": false}')
+
+    monkeypatch.setattr(claude_code, "run_cli", logout)
+    with ThreadPoolExecutor() as pool:
+        login = pool.submit(asyncio.run, tokens.connect("anthropic"))
+        try:
+            assert reached.wait(5)
+            if checkpoint == "approved_login":
+                reached.clear()
+                launched[0]._approve()
+                assert reached.wait(5)
+            assert tokens.disconnect("anthropic")[0]
+            assert not tokens.has_credential("anthropic")
+        finally:
+            release.set()
+        assert not login.result(timeout=5)[0]
+    assert not tokens.has_credential("anthropic")
+    assert claude_code._login_process is None
+
+
+def test_disconnect_waits_for_pending_cli_exit_before_logout(monkeypatch):
+    """Do not report success while a process can still write private auth."""
+    connected(monkeypatch)
+    process = SimpleNamespace(poll=lambda: None, kill=lambda: None)
+
+    def stuck(timeout):
+        raise subprocess.TimeoutExpired("claude", timeout)
+
+    process.wait = stuck
+    monkeypatch.setattr(claude_code, "_login_process", process)
+    monkeypatch.setattr(
+        claude_code, "run_cli", lambda *args, **kwargs: pytest.fail("CLI still running")
+    )
+    assert not tokens.disconnect("anthropic")[0]
+    assert tokens.has_credential("anthropic")
+
+
+def test_browser_disconnect_cancels_pending_login_and_reconnects_cleanly(
+    monkeypatch, tmp_path
+):
+    """Full backend workflow: real handlers, auth facade, settings and factory."""
+    from app import config
+    from app.ui_layer.adapters.browser_adapter import BrowserAdapter
+    from app.ui_layer.settings import model_settings, provider_settings
+    from craftos_integrations.credentials_store import save_credential
+
+    path = tmp_path / "settings.json"
+    path.write_text(json.dumps({"model": {"llm_provider": "anthropic"}}))
+    for module in (config, model_settings, provider_settings):
+        monkeypatch.setattr(module, "SETTINGS_CONFIG_PATH", path)
+    monkeypatch.setattr(config, "_settings_cache", None)
+    save_credential(
+        claude_code.CRED_FILE,
+        claude_code.ClaudeCodeConnection(profile_version=claude_code.PROFILE_VERSION),
+    )
+    state = {"loggedIn": False, "authMethod": "claude.ai"}
+    started = threading.Event()
+    launched = []
+    outcomes = iter(["abandon", "approve"])
+
+    def signed_in():
+        state["loggedIn"] = True
+
+    def popen(args, **kwargs):
+        process = FakeLogin(
+            args, **kwargs, outcome=next(outcomes), on_success=signed_in
+        )
+        launched.append(process)
+        started.set()
+        return process
+
+    def cli(args, **kwargs):
+        if args == ["auth", "logout"]:
+            state["loggedIn"] = False
+        return SimpleNamespace(returncode=0, stdout=json.dumps(state))
+
+    monkeypatch.setattr(claude_code, "cli_command", lambda: ["claude"])
+    monkeypatch.setattr(claude_code.subprocess, "Popen", popen)
+    monkeypatch.setattr(claude_code, "run_cli", cli)
+    api_client = object()
+    monkeypatch.setattr(
+        "agent_core.core.models.factory._create_anthropic_client",
+        lambda **kwargs: api_client,
+    )
+    clients = []
+    sent = []
+
+    def reinitialize(provider):
+        context = ModelFactory.create(
+            provider=provider, interface=InterfaceType.LLM, api_key="paid-key"
+        )
+        clients.append(context["anthropic_client"])
+
+    async def broadcast(message):
+        sent.append(message)
+
+    adapter = object.__new__(BrowserAdapter)
+    adapter._broadcast = broadcast
+    adapter._controller = SimpleNamespace(
+        agent=SimpleNamespace(reinitialize_llm=reinitialize)
+    )
+
+    async def run():
+        pending = asyncio.create_task(
+            adapter._handle_model_subscription_connect("anthropic")
+        )
+        assert await asyncio.to_thread(started.wait, 5)
+        await adapter._handle_model_subscription_disconnect("anthropic")
+        await pending
+        assert not tokens.has_credential("anthropic")
+        assert clients == [api_client]
+        assert json.loads(path.read_text())["auth_mode"]["anthropic"] == "api_key"
+        assert not next(
+            message
+            for message in sent
+            if message["type"] == "model_subscription_connect"
+        )["data"]["success"]
+        await adapter._handle_model_subscription_connect("anthropic")
+        assert isinstance(clients[-1], ClaudeCodeClient)
+        assert tokens.has_credential("anthropic")
+        assert json.loads(path.read_text())["auth_mode"]["anthropic"] == "subscription"
+        await adapter._handle_model_subscription_disconnect("anthropic")
+        assert clients[-1] is api_client
+        assert not tokens.has_credential("anthropic")
+        assert not state["loggedIn"]
+
+    asyncio.run(run())
+    assert len(launched) == 2
+    assert all(process.poll() is not None for process in launched)

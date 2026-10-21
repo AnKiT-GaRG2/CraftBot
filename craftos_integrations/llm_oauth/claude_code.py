@@ -190,6 +190,29 @@ def _save_connection(current: Dict[str, Any]) -> Tuple[bool, str]:
 
 _login_lock = threading.Lock()
 _login_process: Optional[subprocess.Popen] = None
+_login_generation = 0
+
+
+def _cancel_login() -> None:
+    """Invalidate every older attempt and reap its CLI before changing auth.
+
+    Caller holds _login_lock. Never wait for browser approval under this lock.
+    """
+    global _login_generation, _login_process
+    _login_generation += 1
+    process = _login_process
+    if process is not None:
+        if process.poll() is None:
+            process.kill()
+        process.wait(timeout=5)
+        _login_process = None
+
+
+def _finish_login(attempt: int, current: Dict[str, Any]) -> Tuple[bool, str]:
+    with _login_lock:
+        if attempt != _login_generation:
+            return False, "Claude sign-in was cancelled or replaced by a newer request."
+        return _save_connection(current)
 
 
 def _last_message(output: List[str]) -> str:
@@ -200,29 +223,33 @@ def _last_message(output: List[str]) -> str:
     return ""
 
 
-def _browser_login() -> Tuple[bool, str]:
+def _browser_login(attempt: int) -> Tuple[bool, str]:
     """Run ``claude auth login`` until the user approves in its browser tab."""
     global _login_process
     try:
-        process = subprocess.Popen(
-            [*cli_command(), "auth", "login", "--claudeai"],
-            env=cli_environment(),
-            # Never written, but kept open: at end of input the CLI would
-            # stop waiting for the browser.
-            stdin=subprocess.PIPE,
-            stdout=subprocess.PIPE,
-            stderr=subprocess.STDOUT,
-            creationflags=subprocess.CREATE_NO_WINDOW if os.name == "nt" else 0,
-        )
+        with _login_lock:
+            if attempt != _login_generation:
+                return (
+                    False,
+                    "Claude sign-in was cancelled or replaced by a newer request.",
+                )
+            process = subprocess.Popen(
+                # Subscription OAuth is the CLI default. Avoid undocumented
+                # flags that older supported CLIs reject before opening a tab.
+                [*cli_command(), "auth", "login"],
+                env=cli_environment(),
+                # Never written, but kept open: at end of input the CLI would
+                # stop waiting for the browser.
+                stdin=subprocess.PIPE,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.STDOUT,
+                creationflags=subprocess.CREATE_NO_WINDOW if os.name == "nt" else 0,
+            )
+            _login_process = process
     except RuntimeError as e:
         return False, str(e)
     except OSError as e:
         return False, f"Could not start Claude Code: {e}"
-    # A newer Connect replaces an abandoned sign-in instead of waiting for it.
-    with _login_lock:
-        previous, _login_process = _login_process, process
-    if previous is not None and previous.poll() is None:
-        previous.kill()
     output: List[str] = []
 
     def read_output() -> None:
@@ -235,11 +262,12 @@ def _browser_login() -> Tuple[bool, str]:
         process.wait(timeout=LOGIN_TIMEOUT_SECONDS)
     except subprocess.TimeoutExpired:
         process.kill()
+        process.wait(timeout=5)
         return False, "Claude sign-in timed out. Click Connect to try again."
     finally:
         with _login_lock:
-            replaced = _login_process is not process
-            if not replaced:
+            replaced = attempt != _login_generation
+            if not replaced and process.poll() is not None:
                 _login_process = None
     reader.join(timeout=5)
     if replaced:
@@ -247,15 +275,23 @@ def _browser_login() -> Tuple[bool, str]:
     if process.returncode:
         detail = _last_message(output) or "Claude Code could not sign in"
         return False, f"Claude sign-in failed: {detail}"
-    return _save_connection(auth_status())
+    return _finish_login(attempt, auth_status())
 
 
 def _login() -> Tuple[bool, str]:
+    # Reserve an identity before even checking an existing private sign-in:
+    # Disconnect must also invalidate that fast path and post-approval checks.
+    with _login_lock:
+        try:
+            _cancel_login()
+        except (OSError, subprocess.TimeoutExpired):
+            return False, "Could not stop the previous Claude sign-in. Retry Connect."
+        attempt = _login_generation
     # A sign-in the private profile already has needs no browser.
     current = auth_status()
     if current["connected"]:
-        return _save_connection(current)
-    return _browser_login()
+        return _finish_login(attempt, current)
+    return _browser_login(attempt)
 
 
 async def run_login() -> Tuple[bool, str]:
@@ -266,6 +302,17 @@ async def run_login() -> Tuple[bool, str]:
 
 def remove() -> Tuple[bool, str]:
     """Sign out only CraftBot's official CLI profile, then clear its marker."""
+    # Serialize logout with starting a CLI and committing a connection flag.
+    # Killing and reaping first prevents a pending CLI from writing auth later.
+    with _login_lock:
+        try:
+            _cancel_login()
+        except (OSError, subprocess.TimeoutExpired):
+            return False, "Could not stop the pending Claude sign-in. Retry Disconnect."
+        return _remove_connection()
+
+
+def _remove_connection() -> Tuple[bool, str]:
     try:
         result = run_cli(["auth", "logout"], timeout=30)
         if result.returncode:

@@ -1,6 +1,38 @@
 # Claude subscription validation report
 
-## Review fixes: 21 October 2026
+## Final closure pass: 21 October 2026
+
+- Model Save, subscription activation and Disconnect share one browser-adapter
+  lock across persistence, live reinitialization and media rollback. CLI status
+  runs afterward, outside that lock. Delayed Save responses refresh persisted
+  values before broadcasting, so they cannot restore an older provider selector.
+- Claude sign-in attempts have generation identities. Disconnect invalidates
+  existing-account checks, pending browser sign-in and post-approval status
+  checks. It kills and reaps the pending CLI before logout, and connection flags
+  are committed only while the attempt is still current. A failed process stop
+  retains the connection and offers a retry. A newer Connect replaces an older
+  attempt without waiting for browser approval.
+- Subscription handlers also discard superseded activation requests, covering
+  the gap between credential completion and acquiring the model-change lock.
+- The installed official CLI 2.1.50 rejected the old `--claudeai` login flag.
+  Login now uses the documented default `claude auth login`, with the existing
+  `authMethod == "claude.ai"` verification before saving an opt-in.
+  See the [official CLI reference](https://code.claude.com/docs/en/cli-reference).
+  The real CLI now starts browser authorization in the isolated private profile.
+- **13 new concurrency regression cases** cover every login phase, process-stop
+  failure, save/activation ordering across Save, Connect, Complete and Disconnect,
+  media rollback ordering, and a full handler/auth/settings/factory workflow
+  through cancellation, fresh reconnect and verified logout.
+- **1,104 Python tests passed** in the combined subscription, transactions,
+  reinitialization, factory, LLM, context-budget, Supabase and WebSocket suites.
+  **65 additional Mini Browser settings tests passed**: **1,169 total**.
+- **4 browser recovery tests passed**. TypeScript, the production build,
+  repository-wide Ruff lint, changed-file formatting, compilation and whitespace
+  checks passed. The production build retains its existing bundle-size warning.
+- Bounded code review: both reported races are closed; no further code blockers
+  identified. Real-account acceptance remains the final merge gate, tracked below.
+
+## Earlier review fixes: 21 October 2026
 
 - Claude Code now receives an explicit thinking disable override when the
   Messages transport omits thinking for an Off choice. The model reasoning
@@ -95,7 +127,7 @@ The user was asked to complete Anthropic's sign-in in the browser opened by Clau
 ### Current manual acceptance
 
 1. Open [CraftBot](http://localhost:27955/settings) and select Model. The previous shared account must no longer appear connected.
-2. Click Connect and complete Anthropic's own browser sign-in for the CraftBot profile.
+2. Click **Sign in with Claude** and complete Anthropic's own browser sign-in for the CraftBot profile.
 3. Run Test Connection. Account entitlement and model access still apply.
 4. Disconnect, confirm the private profile is logged out, then reconnect and confirm a browser sign-in is required again.
 5. Confirm the standalone Claude Code CLI remains signed in throughout.
