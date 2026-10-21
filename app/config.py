@@ -63,10 +63,11 @@ def invalidate_settings_cache() -> None:
 
 
 # Context budget settings. The decision to summarize the event stream is made
-# on the WHOLE request (see ActionRouter / LLMInterface.fits_context):
-#   model.context_window        the model's window, in tokens
-#   context.reserve_tokens      headroom the summary request itself needs
-#   context.keep_recent_tokens  recent events kept verbatim after a fold
+# on the WHOLE request against the serving model's own window, from the model
+# catalog (see ActionRouter / LLMInterface.fits_context):
+#   model.context_window        the window of a model the catalog does not
+#                               list (local servers, custom endpoints)
+#   context.keep_recent_tokens  most recent events kept verbatim after a fold
 # A key that is absent takes the shipped value from _get_default_settings();
 # a key that is present but invalid is a ConfigurationError.
 
@@ -89,7 +90,6 @@ def _get_default_settings() -> Dict[str, Any]:
         "proactive": {"enabled": True},
         "memory": {"enabled": True},
         "context": {
-            "reserve_tokens": 16384,
             "keep_recent_tokens": 20000,
         },
         "model": {
@@ -148,7 +148,10 @@ def _get_default_settings() -> Dict[str, Any]:
             "search_url": "https://duckduckgo.com/?q={query}",
             "allow_file_urls": False,
             "max_agent_tabs": 6,
-            "idle_shutdown_minutes": 30,  # 0 = never
+            # A session's browser closes this long after its panel was closed
+            # and its agent's run ended (0 = never).
+            "idle_shutdown_minutes": 3,
+            "max_running_browsers": 4,  # session browsers running at once
             "locale": "",  # "" = the OS locale
             "channel": "chromium",  # "" = Playwright's bundled headless shell
         },
@@ -227,12 +230,13 @@ def _setting(section: str, key: str) -> Any:
 
 
 def get_context_window() -> int:
-    """The configured model's context window in tokens (model.context_window)."""
+    """Context window, in tokens, of a model the model catalog does not list
+    (model.context_window). A catalogued model uses its own window."""
     value = _setting("model", "context_window")
     if isinstance(value, bool) or not isinstance(value, int) or value <= 0:
         raise ConfigurationError(
             "settings.json model.context_window must be a positive integer: the "
-            "context window of the configured model, in tokens."
+            "context window, in tokens, of a model the model catalog does not list."
         )
     return value
 
@@ -246,13 +250,9 @@ def _get_positive_int(section: str, key: str) -> int:
     return value
 
 
-def get_reserve_tokens() -> int:
-    """Headroom kept free for the summary request (context.reserve_tokens)."""
-    return _get_positive_int("context", "reserve_tokens")
-
-
 def get_keep_recent_tokens() -> int:
-    """Recent event-stream tokens kept verbatim after a fold (context.keep_recent_tokens)."""
+    """Most recent event-stream tokens kept verbatim after a fold
+    (context.keep_recent_tokens); a fold keeps less when the budget is tight."""
     return _get_positive_int("context", "keep_recent_tokens")
 
 

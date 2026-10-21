@@ -2,12 +2,6 @@
   "page": {
     "label": "ミニブラウザ"
   },
-  "chat": {
-    "placeholder": "ウェブでの作業を頼んでみましょう…",
-    "show": "チャットを表示",
-    "hide": "チャットを非表示",
-    "loading": "チャットを準備しています…"
-  },
   "toolbar": {
     "label": "ブラウザの操作",
     "back": "戻る",
@@ -53,7 +47,7 @@
     "owner": {
       "you": "あなた",
       "main": "メインチャット",
-      "miniBrowser": "このチャット",
+      "agent": "エージェント",
       "session": "チャット",
       "subagent": "サブエージェント",
       "subagentOf": "サブエージェント（{{parent}}）"
@@ -84,13 +78,17 @@
   "status": {
     "connecting": "ミニブラウザに接続しています…",
     "starting": "ブラウザを起動しています…",
+    "resuming": "前回の続きから再開しています…",
+    "pausedTitle": "ブラウザは一時停止中です",
+    "pausedBody": "ページは前回の続きから開き直します。",
+    "resume": "再開",
     "installing": "ブラウザをインストールしています…",
     "installingHint": "Chromium をダウンロードしています。数分かかることがあります。",
     "installLog": "インストールのログ",
     "installDone": "ブラウザをインストールしました",
     "errorTitle": "ブラウザで問題が発生しました",
     "stoppedTitle": "エージェントと一緒にブラウジング",
-    "stoppedBody": "エージェントと共有する本物のブラウザです。作業の様子をライブで見守り、いつでも操作を代われます。",
+    "stoppedBody": "このチャット専用のブラウザです。エージェントの作業をライブで見守り、いつでも操作を代われます。",
     "start": "ブラウザを起動",
     "openSite": "サイトを開く",
     "tryAsking": "エージェントにこんなふうに頼めます",
@@ -108,7 +106,7 @@
     "install": "ブラウザをインストール",
     "installAgain": "もう一度インストール",
     "retry": "再試行",
-    "profileInUseHint": "ミニブラウザを使っている別の CraftBot ウィンドウを閉じてから、もう一度お試しください。"
+    "profileInUseHint": "このチャットのブラウザを使っている別の CraftBot を閉じてから、もう一度お試しください。"
   },
   "events": {
     "download": "{{name}} をダウンロードしました",
@@ -125,7 +123,7 @@
   },
   "confirm": {
     "shutdownTitle": "ブラウザを閉じますか？",
-    "shutdownMessage": "エージェントがまだ閲覧中です。ブラウザを閉じるとすべてのタブが閉じますが、作業中のエージェントがもう一度ブラウザを開くことがあります。エージェントを止めるには、そのチャットの「停止」を押してください。"
+    "shutdownMessage": "エージェントがまだ閲覧中です。ブラウザを閉じるとすべてのタブが閉じますが、作業中のエージェントがもう一度ブラウザを開くことがあります。エージェントを止めるには「停止」を押してください。"
   },
   "passwords": {
     "title": "保存したパスワード",
@@ -193,7 +191,7 @@
     },
     "MINI_BROWSER_PROFILE_IN_USE": {
       "title": "ブラウザのプロファイルが使用中です",
-      "message": "別の CraftBot ウィンドウがミニブラウザのプロファイルを使用しています。"
+      "message": "別の CraftBot がこのチャットのブラウザのプロファイルを使用しています。"
     },
     "MINI_BROWSER_LAUNCH_FAILED": {
       "title": "ブラウザを起動できませんでした",
@@ -235,6 +233,14 @@
       "title": "タブが多すぎます",
       "message": "開いているタブが多すぎます。タブを閉じてから、もう一度お試しください。"
     },
+    "MINI_BROWSER_TOO_MANY_BROWSERS": {
+      "title": "開いているブラウザが多すぎます",
+      "message": "ほかのチャットのブラウザが起動中で使用されています。どれかを閉じるか、そのエージェントの作業が終わるまでお待ちください。"
+    },
+    "MINI_BROWSER_SESSION_GONE": {
+      "title": "チャットが削除されました",
+      "message": "このチャットは削除されたため、そのブラウザもなくなりました。"
+    },
     "MINI_BROWSER_TIMEOUT": {
       "title": "タイムアウトしました",
       "message": "時間がかかりすぎました。もう一度お試しください。"
@@ -259,5 +265,57 @@
       "title": "問題が発生しました",
       "message": "ミニブラウザで予期しない問題が発生しました。"
     }
+  },
+  "credentials": {
+    "title": "認証情報",
+    "intro": "ログイン、API キー、プライベートなメモをひとまとめに。",
+    "search": "認証情報を検索",
+    "add": "認証情報を追加",
+    "save": "認証情報を保存",
+    "editTitle": "認証情報を編集",
+    "type": "種類",
+    "group": "グループ",
+    "all": "すべての項目",
+    "allGroups": "すべてのグループ",
+    "list": "保存済みの認証情報",
+    "kinds": {
+      "login": "ログイン",
+      "api_key": "API キー",
+      "secure_note": "セキュアメモ"
+    },
+    "groups": {
+      "work": "仕事",
+      "personal": "個人",
+      "other": "その他"
+    },
+    "name": "名前",
+    "optionalName": "名前（任意）",
+    "optionalWebsite": "ウェブサイト（任意）",
+    "apiWebsiteHint": "API ホスト（例: api.example.com）を設定すると、エージェントがキーを見ずに使用できます。リクエストのホストとポートは完全一致が必要で、HTTPS（localhost のみ HTTP 可）を使用します。リダイレクトは拒否されます。",
+    "apiKey": "API キー",
+    "note": "メモ",
+    "keepValue": "空欄のままで保存済みの値を維持",
+    "loading": "認証情報を読み込み中…",
+    "empty": "ここから保管庫を始めましょう",
+    "emptyHint": "ログイン、API キー、セキュアメモを追加します。",
+    "noMatches": "一致する認証情報がありません",
+    "searchHint": "検索語やフィルターを変更してください。",
+    "clearFilters": "フィルターを解除",
+    "saved": "認証情報を保存しました",
+    "updated": "認証情報を更新しました",
+    "deleted": "認証情報を削除しました",
+    "view": "値を表示",
+    "viewNamed": "{{name}}を表示",
+    "editNamed": "{{name}}を編集",
+    "deleteNamed": "{{name}}を削除",
+    "deleteTitle": "この認証情報を削除しますか？",
+    "deleteMessage": "「{{name}}」を削除しますか？この保管庫から保存済みの認証情報が削除されます。",
+    "reveal": "値を表示",
+    "hide": "値を隠す",
+    "copy": "値をコピー",
+    "copied": "クリップボードにコピーしました",
+    "copyFailed": "コピーできませんでした。値を選択して手動でコピーしてください。",
+    "revealHint": "表示するまで隠されています。30秒後、またはこのウィンドウを離れると再び隠されます。",
+    "revealFailed": "値を読み込めませんでした。接続を確認して再試行してください。"
   }
 }

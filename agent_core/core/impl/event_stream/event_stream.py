@@ -10,15 +10,16 @@ APIs:
   log(kind, message, severity="INFO") -> int (event index)
   to_prompt_snapshot(max_events=60, include_summary=True) -> str
   summarize_by_rule()        # force summarization of oldest chunk
-  summarize_by_LLM()        # force summarization of oldest chunk
+  summarize_by_LLM(keep_tokens)  # force summarization of oldest chunk
 """
 
 from __future__ import annotations
 from datetime import datetime, timezone
+import hashlib
 import re
 import time
 from pathlib import Path
-from typing import List, Optional, Set, Tuple
+from typing import Any, Callable, Dict, List, Optional, Set, Tuple
 from agent_core.core.event_stream.event import Event, EventRecord, EventType
 from agent_core.core.protocols.llm import LLMInterfaceProtocol
 from agent_core.core.prompts import EVENT_STREAM_SUMMARIZATION_PROMPT
@@ -29,27 +30,6 @@ from agent_core.utils.token import count_tokens
 import threading
 
 SEVERITIES = ("DEBUG", "INFO", "WARN", "ERROR")
-
-
-def _configured_keep_recent_tokens() -> int:
-    """Read context.keep_recent_tokens from settings.json.
-
-    app.config owns the defaults and already absorbs a missing file, bad JSON
-    and out-of-range values, so there is nothing left to guard here — a raised
-    ImportError means the app package is genuinely gone, which is a broken
-    install, not a case to paper over with a second copy of the numbers.
-
-    The import is deferred because app.config imports agent_core at module
-    scope (``from agent_core import get_credential``), and agent_core's
-    __init__ loads this module — a module-scope import would close that cycle.
-    By stream-construction time every module is loaded and the import is fine.
-
-    Read once per stream, so a settings.json edit applies to sessions created
-    after it; the main session's stream needs a restart.
-    """
-    from app.config import get_keep_recent_tokens
-
-    return get_keep_recent_tokens()
 
 
 # Messages longer than this are externalized to a temp file and replaced with a
@@ -118,15 +98,13 @@ class EventStream:
         llm: LLMInterfaceProtocol,
         temp_dir: Path | None = None,
     ) -> None:
-        # The stream never decides to fold on its own. The router asks for a
-        # fold (summarize_by_LLM) when the NEXT REQUEST would not fit the
-        # context budget; the only stream-side setting is how much recent
-        # history a fold keeps. Tests pin it by patching
-        # _configured_keep_recent_tokens (see the event_stream_limits fixture).
+        # The stream never decides to fold on its own, nor how much a fold
+        # keeps. The router asks for a fold (summarize_by_LLM) when the NEXT
+        # REQUEST would not fit the model's context budget, and says how many
+        # recent tokens to keep.
         self.head_summary: Optional[str] = None
         self.llm = llm
         self.tail_events: List[EventRecord] = []
-        self.tail_keep_after_summarize_tokens = _configured_keep_recent_tokens()
         self.temp_dir = temp_dir
 
         self._lock = threading.RLock()
@@ -442,18 +420,17 @@ class EventStream:
         )
         return cutoff
 
-    def _fold_cutoff(self) -> int:
+    def _fold_cutoff(self, keep_tokens: int) -> int:
         """How many leading tail events a fold may collapse.
 
-        The keep-recent window decides, except that a fold never reaches an
-        event the model has not received. The router asks for a fold right
-        after actions return, before their results are sent; folding those
-        results then hands the agent a summary or a pointer of output it never
-        saw, and it runs the same read again, which overflows again.
+        The keep-recent window (``keep_tokens``) decides, except that a fold
+        never reaches an event the model has not received. The router asks
+        for a fold right after actions return, before their results are sent;
+        folding those results then hands the agent a summary or a pointer of
+        output it never saw, and it runs the same read again, which overflows
+        again.
         """
-        cutoff = self._find_token_cutoff(
-            self.tail_events, self.tail_keep_after_summarize_tokens
-        )
+        cutoff = self._find_token_cutoff(self.tail_events, keep_tokens)
         first_undelivered = next(
             (i for i, r in enumerate(self.tail_events) if not r.delivered),
             len(self.tail_events),
@@ -527,7 +504,7 @@ class EventStream:
         """Externalize oversized events the model has not received yet.
 
         For the router only, when a request still does not fit after a fold:
-        the fold keeps at most keep_recent_tokens of what the model had read
+        the fold keeps at most its keep target of what the model had read
         (new events count against it), so the events it has not received are
         too large to send in full. Pointers are the only way to hand them over.
 
@@ -545,28 +522,27 @@ class EventStream:
                 )
             return reclaimed
 
-    def summarize_by_LLM(self) -> None:
+    def summarize_by_LLM(self, keep_tokens: int) -> None:
         """
-        Summarize the oldest tail events using the language model.
+        Summarize the oldest tail events using the language model, keeping
+        about ``keep_tokens`` of the most recent events verbatim.
 
         This is a SYNCHRONOUS blocking call that holds the lock for the entire
         duration, including the LLM call. This ensures no events can be added
         while summarization is in progress.
-
-        Called from log() which already holds the lock (RLock allows reentry).
         """
         if not self.tail_events:
             return
 
         # Find cutoff based on tokens to keep (never past what the model has read)
-        cutoff = self._fold_cutoff()
+        cutoff = self._fold_cutoff(keep_tokens)
 
         # Collapse anything oversized that the recent-event pin is holding
         # verbatim BEFORE deciding whether an LLM call is warranted — that alone
         # often drops the stream back under the threshold for free.
         if self._shrink_pinned_oversize(cutoff):
             # Budget changed; the fold boundary moves with it.
-            cutoff = self._fold_cutoff()
+            cutoff = self._fold_cutoff(keep_tokens)
 
         if cutoff <= 0:
             # Nothing old enough to summarize
@@ -811,11 +787,14 @@ class EventStream:
         self.tail_events.clear()
         self._total_tokens = 0
         self._session_sync_points.clear()
+        # A new stream: its first event gets a fresh datetime marker.
+        self._last_datetime_ts = None
 
     # ───────────────────── Session Cache Delta Tracking ─────────────────────
 
-    def mark_delivered(self) -> None:
-        """Record that the model has received every event now in the tail.
+    def mark_delivered(self, up_to: Optional[int] = None) -> None:
+        """Record that the model has received every event now in the tail
+        (or the first ``up_to`` of them).
 
         Called once a request carrying the stream has been answered: through
         mark_session_synced on the session-cache paths, and by the router
@@ -823,8 +802,57 @@ class EventStream:
         the next answered request, so a fold cannot collapse them first.
         """
         with self._lock:
-            for rec in self.tail_events:
+            for rec in self.tail_events[:up_to]:
                 rec.delivered = True
+
+    def sync_marker(self, call_type: str) -> Optional[Dict[str, Any]]:
+        """A session cache's sync point in a form that can be checked after
+        a restart: the point, the timestamps of the first and last event
+        before it, and a digest of the head summary. None when the call type
+        has no sync point."""
+        with self._lock:
+            point = self._session_sync_points.get(call_type)
+            return None if point is None else self._marker_at(point)
+
+    def restore_sync_point(self, call_type: str, marker: Dict[str, Any]) -> bool:
+        """Put back a sync point saved with sync_marker, but only if this
+        stream still holds the same events before it (same summary, same
+        first and last event). Otherwise there is none, and the next request
+        sends the whole stream."""
+        with self._lock:
+            point = marker.get("point")
+            if not isinstance(point, int) or not 0 <= point <= len(self.tail_events):
+                return False
+            if self._marker_at(point) != marker:
+                return False
+            self._session_sync_points[call_type] = point
+            return True
+
+    def _marker_at(self, point: int) -> Dict[str, Any]:
+        """Caller holds the lock."""
+        return {
+            "point": point,
+            "first": self.tail_events[0].ts.isoformat() if point else None,
+            "last": self.tail_events[point - 1].ts.isoformat() if point else None,
+            "summary": hashlib.sha256(
+                (self.head_summary or "").encode("utf-8")
+            ).hexdigest(),
+        }
+
+    def replace_ui_artifact(
+        self, artifact_id: str, replace: Callable[[Dict[str, Any]], Dict[str, Any]]
+    ) -> int:
+        """Swap the UI artifact payload of every event that carries artifact
+        ``artifact_id`` for ``replace(payload)`` (the user closed it). Returns
+        how many events carried it."""
+        count = 0
+        with self._lock:
+            for rec in self.tail_events:
+                artifact = rec.event.ui_artifact
+                if artifact and artifact.get("id") == artifact_id:
+                    rec.event.ui_artifact = replace(artifact)
+                    count += 1
+        return count
 
     def mark_session_synced(self, call_type: str) -> None:
         """

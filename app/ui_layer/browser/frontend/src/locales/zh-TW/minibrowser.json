@@ -2,12 +2,6 @@
   "page": {
     "label": "迷你瀏覽器"
   },
-  "chat": {
-    "placeholder": "請代理幫你瀏覽網頁、搜尋或填寫表單…",
-    "show": "顯示對話",
-    "hide": "隱藏對話",
-    "loading": "正在準備對話…"
-  },
   "toolbar": {
     "label": "瀏覽器控制項",
     "back": "上一頁",
@@ -53,7 +47,7 @@
     "owner": {
       "you": "你",
       "main": "主要對話",
-      "miniBrowser": "這個對話",
+      "agent": "代理",
       "session": "對話",
       "subagent": "子代理",
       "subagentOf": "子代理（{{parent}}）"
@@ -84,13 +78,17 @@
   "status": {
     "connecting": "正在連線到迷你瀏覽器…",
     "starting": "正在啟動瀏覽器…",
+    "resuming": "正在從上次離開的地方繼續…",
+    "pausedTitle": "瀏覽器已暫停",
+    "pausedBody": "你的頁面會從上次離開的地方重新開啟。",
+    "resume": "繼續",
     "installing": "正在安裝瀏覽器…",
     "installingHint": "正在下載 Chromium，可能需要幾分鐘。",
     "installLog": "安裝記錄",
     "installDone": "瀏覽器已安裝",
     "errorTitle": "瀏覽器發生問題",
     "stoppedTitle": "和代理一起瀏覽網頁",
-    "stoppedBody": "一個與代理共用的真實瀏覽器。你可以即時觀看它們工作，也可以隨時接手操作。",
+    "stoppedBody": "這個對話專屬的瀏覽器。你可以即時觀看代理工作，也可以隨時接手操作。",
     "start": "啟動瀏覽器",
     "openSite": "開啟網站",
     "tryAsking": "試著這樣請代理幫忙",
@@ -108,7 +106,7 @@
     "install": "安裝瀏覽器",
     "installAgain": "重新安裝",
     "retry": "重試",
-    "profileInUseHint": "請關閉正在使用迷你瀏覽器的另一個 CraftBot 視窗，然後再試一次。"
+    "profileInUseHint": "請關閉正在使用這個對話瀏覽器的另一個 CraftBot，然後再試一次。"
   },
   "events": {
     "download": "已下載 {{name}}",
@@ -125,7 +123,7 @@
   },
   "confirm": {
     "shutdownTitle": "要關閉瀏覽器嗎？",
-    "shutdownMessage": "代理仍在瀏覽中。關閉瀏覽器會關閉所有分頁，但仍在工作的代理可能會再次開啟它。若要讓代理停止，請在它的對話中按「停止」。"
+    "shutdownMessage": "代理仍在瀏覽中。關閉瀏覽器會關閉所有分頁，但仍在工作的代理可能會再次開啟它。若要讓代理停止，請按「停止」。"
   },
   "passwords": {
     "title": "已儲存的密碼",
@@ -193,7 +191,7 @@
     },
     "MINI_BROWSER_PROFILE_IN_USE": {
       "title": "瀏覽器設定檔使用中",
-      "message": "另一個 CraftBot 視窗正在使用迷你瀏覽器的設定檔。"
+      "message": "另一個 CraftBot 正在使用這個對話瀏覽器的設定檔。"
     },
     "MINI_BROWSER_LAUNCH_FAILED": {
       "title": "瀏覽器無法啟動",
@@ -235,6 +233,14 @@
       "title": "分頁太多",
       "message": "開啟的分頁太多了。請先關閉一個分頁，然後再試一次。"
     },
+    "MINI_BROWSER_TOO_MANY_BROWSERS": {
+      "title": "開啟的瀏覽器太多",
+      "message": "其他對話的瀏覽器正在執行並使用中。請關閉其中一個，或等它的代理完成。"
+    },
+    "MINI_BROWSER_SESSION_GONE": {
+      "title": "對話已刪除",
+      "message": "這個對話已被刪除，因此它的瀏覽器也不存在了。"
+    },
     "MINI_BROWSER_TIMEOUT": {
       "title": "已逾時",
       "message": "花費的時間太長，請再試一次。"
@@ -259,5 +265,57 @@
       "title": "發生問題",
       "message": "迷你瀏覽器發生了非預期的問題。"
     }
+  },
+  "credentials": {
+    "title": "認證資料",
+    "intro": "集中管理登入、API 金鑰和私人筆記。",
+    "search": "搜尋認證資料",
+    "add": "新增認證資料",
+    "save": "儲存認證資料",
+    "editTitle": "編輯認證資料",
+    "type": "類型",
+    "group": "群組",
+    "all": "所有項目",
+    "allGroups": "所有群組",
+    "list": "已儲存的認證資料",
+    "kinds": {
+      "login": "登入",
+      "api_key": "API 金鑰",
+      "secure_note": "安全筆記"
+    },
+    "groups": {
+      "work": "工作",
+      "personal": "個人",
+      "other": "其他"
+    },
+    "name": "名稱",
+    "optionalName": "名稱（選填）",
+    "optionalWebsite": "網站（選填）",
+    "apiWebsiteHint": "設定 API 主機（例如 api.example.com），讓代理無需查看金鑰即可使用。請求必須與此主機及連接埠完全相符，並使用 HTTPS（localhost 也可使用 HTTP）。重新導向會被封鎖。",
+    "apiKey": "API 金鑰",
+    "note": "筆記",
+    "keepValue": "留空以保留已儲存的值",
+    "loading": "正在載入認證資料…",
+    "empty": "從這裡開始使用保管庫",
+    "emptyHint": "新增登入、API 金鑰或安全筆記。",
+    "noMatches": "沒有相符的認證資料",
+    "searchHint": "嘗試其他搜尋字詞或變更篩選條件。",
+    "clearFilters": "清除篩選條件",
+    "saved": "認證資料已儲存",
+    "updated": "認證資料已更新",
+    "deleted": "認證資料已刪除",
+    "view": "檢視值",
+    "viewNamed": "檢視 {{name}}",
+    "editNamed": "編輯 {{name}}",
+    "deleteNamed": "刪除 {{name}}",
+    "deleteTitle": "刪除此認證資料？",
+    "deleteMessage": "刪除「{{name}}」？這會從保管庫移除已儲存的認證資料。",
+    "reveal": "顯示值",
+    "hide": "隱藏值",
+    "copy": "複製值",
+    "copied": "已複製到剪貼簿",
+    "copyFailed": "無法複製。請選取並手動複製值。",
+    "revealHint": "在您選擇顯示前保持隱藏。30 秒後或離開此視窗時會再次隱藏。",
+    "revealFailed": "無法載入值。請檢查連線並再試一次。"
   }
 }

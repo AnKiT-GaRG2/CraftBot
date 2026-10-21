@@ -993,6 +993,87 @@ def test_login_picks_a_username_and_reports_a_rejected_password(browser, login_s
     assert _no_secret(rejected, "Bob-pass-777", PASSWORD)
 
 
+@pytest.mark.parametrize("name", ["Work account", " work ACCOUNT "])
+def test_login_selects_saved_name_instead_of_most_recent_account(browser, login_site, name):
+    vault = _vault()
+    vault.entries[0]["label"] = "Work account"
+    vault.entries[1]["label"] = "Personal account"
+    vault.entries.reverse()  # Bob would be chosen without an explicit selector.
+    core = FakeCore(vault=vault)
+
+    async def scenario(core, tab):
+        return await ops.login(core, tab, login_name=name)
+
+    result = run(browser, login_site.url("/login"), scenario, core=core)
+    assert result["outcome"] == "signed_in"
+    assert result["username"] == USER
+    assert vault.used == ["e1"]
+    assert _no_secret(result, PASSWORD, "Bob-pass-777")
+
+
+@pytest.mark.parametrize(
+    "name, username, duplicate, code",
+    [
+        ("Missing", None, False, "MINI_BROWSER_NO_SAVED_LOGIN"),
+        ("Work", None, False, "MINI_BROWSER_NO_SAVED_LOGIN"),  # no partial names
+        ("Work account", "bob@example.com", False, "MINI_BROWSER_NO_SAVED_LOGIN"),
+        ("Work account", None, True, "MINI_BROWSER_LOGIN_AMBIGUOUS"),
+    ],
+)
+def test_login_name_errors_never_fill_another_account(
+    browser, login_site, name, username, duplicate, code
+):
+    vault = _vault()
+    vault.entries[0]["label"] = "Work account"
+    vault.entries[1]["label"] = "WORK ACCOUNT" if duplicate else "Personal account"
+    core = FakeCore(vault=vault)
+
+    async def scenario(core, tab):
+        error = await expect_error(
+            ops.login(core, tab, login_name=name, username=username), code
+        )
+        values = await tab.page.evaluate(
+            "[document.getElementById('user').value, document.getElementById('pw').value]"
+        )
+        return str(error), values, list(tab.filled_secrets)
+
+    error, values, secrets = run(browser, login_site.url("/login"), scenario, core=core)
+    assert values == ["", ""]
+    assert secrets == []
+    assert vault.used == [] and core.events == []
+    assert _no_secret(error, PASSWORD, "Bob-pass-777")
+
+
+def test_login_name_duplicate_can_be_disambiguated_by_username(browser, login_site):
+    vault = _vault()
+    for entry in vault.entries:
+        entry["label"] = "Work account"
+    vault.entries.reverse()
+    core = FakeCore(vault=vault)
+
+    async def scenario(core, tab):
+        return await ops.login(core, tab, login_name="Work account", username=USER.upper())
+
+    result = run(browser, login_site.url("/login"), scenario, core=core)
+    assert result["outcome"] == "signed_in"
+    assert result["username"] == USER and vault.used == ["e1"]
+    assert _no_secret(result, PASSWORD, "Bob-pass-777")
+
+
+def test_login_name_does_not_allow_a_different_site(browser, login_site):
+    vault = _vault()
+    vault.entries[0]["label"] = "Work account"
+    core = FakeCore(vault=vault)
+
+    async def scenario(core, tab):
+        return await expect_error(
+            ops.login(core, tab, login_name="Work account"), "MINI_BROWSER_NO_SAVED_LOGIN"
+        )
+
+    run(browser, login_site.url("/login", host="localhost"), scenario, core=core)
+    assert vault.used == [] and core.events == []
+
+
 @pytest.mark.parametrize(
     "path, outcome",
     [

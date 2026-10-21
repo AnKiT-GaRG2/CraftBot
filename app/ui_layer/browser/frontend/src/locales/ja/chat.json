@@ -40,6 +40,20 @@
     "defaultTag": "既定",
     "notConfigurable": "{{model}} では推論を調整できません",
     "clamped": "{{requested}} はこのモデルでは使えないため、{{effective}} を使用します。",
+    "context": {
+      "label": "コンテキスト",
+      "summarizesAt": "{{max}} で要約"
+    },
+    "cache": {
+      "label": "キャッシュ",
+      "hit": "{{percent}} キャッシュ済み",
+      "notReported": "報告なし",
+      "notYet": "まだキャッシュなし",
+      "timeLeft": "残り時間",
+      "about": "~{{time}}",
+      "expired": "期限切れ",
+      "noExpiry": "有効期限なし"
+    },
     "choice": {
       "provider_default": "プロバイダーの既定",
       "off": "オフ",
@@ -98,5 +112,14 @@
     "replyTooltip": "このメッセージに返信",
     "copyTooltip": "メッセージをコピー",
     "copiedTooltip": "コピーしました！"
+  },
+  "browserPanel": {
+    "show": "このチャットのブラウザを表示",
+    "running": "このチャットのブラウザは起動中です",
+    "browsing": "エージェントが閲覧中です",
+    "region": "ブラウザパネル"
+  },
+  "panel": {
+    "close": "パネルを閉じる"
   }
 }

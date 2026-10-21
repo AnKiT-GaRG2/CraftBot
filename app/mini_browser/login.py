@@ -1,11 +1,11 @@
 """Saved-login autofill for the Mini Browser (origin-checked, never leaks).
 
-``autofill(core, tab, username=None, submit=True)`` signs the agent's tab in
+``autofill(core, tab, username=None, login_name=None, submit=True)`` signs the agent's tab in
 with a login from the password vault. Guarantees:
 
 - The site is always the page's own origin (``page.main_frame.url`` at fill
   time). The vault decides which saved logins may be used there
-  (``candidates_for_url``); ``username`` only picks among those.
+  (``candidates_for_url``); ``username`` and ``login_name`` only pick among those.
 - The origin is checked again right before every fill, and the fields are
   tagged with a fresh random nonce: a fill can only land in the document the
   form was found in, never in a page the tab navigated to meanwhile.
@@ -479,23 +479,34 @@ def _check_origin(page: Any, frame: Any, origin: Tuple[str, str, int]) -> None:
 
 
 def _choose(
-    entries: List[Dict[str, Any]], username: Optional[str]
+    entries: List[Dict[str, Any]], username: Optional[str],
+    login_name: Optional[str] = None,
 ) -> Tuple[Optional[Dict[str, Any]], List[str]]:
     """The entry to use (vault order = best first) and the other usernames."""
+    candidates = entries
+    if login_name:
+        wanted = login_name.strip().casefold()
+        candidates = [
+            e for e in entries if str(e.get("label") or "").strip().casefold() == wanted
+        ]
     chosen: Optional[Dict[str, Any]] = None
     if not username:
-        chosen = entries[0]
+        matches = candidates
     else:
         wanted = username.strip().casefold()
-        names = [str(e.get("username") or "").casefold() for e in entries]
-        exact = [e for e, name in zip(entries, names) if name == wanted]
+        names = [str(e.get("username") or "").casefold() for e in candidates]
+        exact = [e for e, name in zip(candidates, names) if name == wanted]
         if exact:
-            chosen = exact[0]
+            matches = exact
         else:
             local = [
-                e for e, name in zip(entries, names) if name.split("@")[0] == wanted
+                e for e, name in zip(candidates, names) if name.split("@")[0] == wanted
             ]
-            chosen = local[0] if len(local) == 1 else None
+            matches = local if len(local) == 1 or login_name else []
+    if login_name and len(matches) > 1:
+        raise MiniBrowserError("MINI_BROWSER_LOGIN_AMBIGUOUS")
+    if matches:
+        chosen = matches[0]
     others = [str(e.get("username") or "") for e in entries if e is not chosen]
     return chosen, others
 
@@ -792,7 +803,8 @@ def _without_fragment(url: str) -> str:
 
 
 async def autofill(
-    core: Any, tab: Any, *, username: Optional[str] = None, submit: bool = True
+    core: Any, tab: Any, *, username: Optional[str] = None,
+    login_name: Optional[str] = None, submit: bool = True
 ) -> Dict[str, Any]:
     """Fill (and by default submit) the page's sign-in form from the vault.
 
@@ -822,10 +834,13 @@ async def autofill(
     entries = await asyncio.to_thread(vault.candidates_for_url, start_url)
     if not entries:
         raise await _no_login(vault, site)
-    entry, others = _choose(entries, username)
+    entry, others = _choose(entries, username, login_name)
     if entry is None:
+        selector = f" for saved login name {login_name!r}" if login_name else ""
+        if username:
+            selector += f" for username {username!r}"
         raise MiniBrowserError(
-            "MINI_BROWSER_NO_SAVED_LOGIN", site=f"{site} for username {username!r}"
+            "MINI_BROWSER_NO_SAVED_LOGIN", site=f"{site}{selector}"
         )
     secret = _Hidden(str(entry.get("password") or ""))
     entry_id = str(entry.get("id") or "")
@@ -941,14 +956,14 @@ def _outcome_message(outcome: str, kind: str, who: str, title: str) -> str:
         return (
             f"Submitted the saved login for {who}, but the site shows a CAPTCHA. "
             "Never try to solve it yourself: tell the user (send_message) to solve "
-            "it in the Mini Browser page and press Hand back, "
+            "it in this chat's browser panel and press Hand back, "
             f"{_WAIT_FOR_USER}."
         )
     if outcome == "needs_verification" and kind == "code":
         return (
             f"Submitted the saved login for {who}; the site now asks for a "
             "verification code. Ask the user for it (never guess it) and type it "
-            "in, or tell them to enter it in the Mini Browser page and press Hand "
+            "in, or tell them to enter it in this chat's browser panel and press Hand "
             f"back, {_WAIT_FOR_USER}."
         )
     if outcome == "needs_verification":
@@ -956,7 +971,7 @@ def _outcome_message(outcome: str, kind: str, who: str, title: str) -> str:
             f"Submitted the saved login for {who}; the site now wants the user to "
             f"confirm the sign-in (the page shows{shows}; for example approving a "
             "prompt on their phone). Ask the user to do that. If they have to act "
-            "in the Mini Browser page, tell them to press Hand back when done, "
+            "in this chat's browser panel, tell them to press Hand back when done, "
             f"{_WAIT_FOR_USER}; otherwise check again with mini_browser_wait "
             "(text=...) or mini_browser_read."
         )

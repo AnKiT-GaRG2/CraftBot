@@ -24,6 +24,7 @@ from agent_core.core.prompts import SELECT_ACTION_PROMPT
 from agent_core.core.impl.llm.interface import LLMContextOverflowError
 from agent_core import get_event_stream_manager
 from agent_core.utils.logger import logger
+from agent_core.utils.token import count_tokens
 
 
 def _is_visible_in_mode(action, GUI_mode: bool) -> bool:
@@ -212,6 +213,36 @@ class ActionRouter:
     # Internal helpers
     # ------------------------------------------------------------------
 
+    def _fold(self, stream, system_prompt: str, static_prompt: Optional[str]) -> None:
+        """Fold ``stream``, keeping as much recent history as the budget allows.
+
+        A fold keeps context.keep_recent_tokens of recent events, but never
+        more than half of the room the model's input budget leaves after
+        what a fold does not shrink: the system prompt, the prompt around
+        the event stream (``static_prompt``) and the running summary. So
+        every fold frees at least half of that room for new events, whatever
+        the model's window.
+        """
+        from app.config import get_keep_recent_tokens
+
+        room = (
+            self.llm_interface.input_budget()
+            - count_tokens(system_prompt)
+            - count_tokens(static_prompt or "")
+            - count_tokens(stream.head_summary or "")
+        )
+        stream.summarize_by_LLM(
+            keep_tokens=min(get_keep_recent_tokens(), max(room, 0) // 2)
+        )
+
+    def _checkpoint(self, stream, task_id: str, call_type: str) -> None:
+        """Tell the LLM interface how far the session history now covers the
+        stream (it saves the history as of this point, so a restart can
+        continue the session on the provider's cached prefix)."""
+        self.llm_interface.checkpoint_session(
+            task_id, call_type, stream.sync_marker(call_type) if stream else None
+        )
+
     async def _prompt_for_decision(
         self,
         prompt: str,
@@ -237,7 +268,7 @@ class ActionRouter:
         max_retries = 3
         last_error: Optional[Exception] = None
         current_prompt = prompt
-        # One fold per decision: a fold keeps at most keep_recent_tokens of what
+        # One fold per decision: a fold keeps at most its keep target of what
         # the model has read (new events count against it), so a request that
         # still does not fit is carrying new events too large to send in full.
         # Those are collapsed to pointers once; if it still does not fit, that
@@ -315,7 +346,7 @@ class ActionRouter:
                                     f"[SESSION CACHE] Next request exceeds the context "
                                     f"budget; folding the event stream for {call_type}"
                                 )
-                                stream.summarize_by_LLM()
+                                self._fold(stream, system_prompt, static_prompt)
                                 folded = True
                                 current_prompt = render_prompt()
                                 self.context_engine.reset_event_stream_sync(
@@ -338,6 +369,7 @@ class ActionRouter:
                                 self.context_engine.mark_event_stream_synced(
                                     call_type, session_id=effective_session_id
                                 )
+                                self._checkpoint(stream, current_task_id, call_type)
                             else:
                                 # No new events - this could mean summarization happened
                                 logger.info(
@@ -373,10 +405,14 @@ class ActionRouter:
                             self.context_engine.mark_event_stream_synced(
                                 call_type, session_id=effective_session_id
                             )
+                            self._checkpoint(stream, current_task_id, call_type)
                     else:
                         # No session registered (simple task) - use prefix cache / regular response
                         raw_response = await self.llm_interface.generate_response_async(
-                            system_prompt, current_prompt, prompt_name=prompt_name
+                            system_prompt,
+                            current_prompt,
+                            prompt_name=prompt_name,
+                            usage_key=f"{current_task_id}:{call_type}",
                         )
                         # The prompt carried the whole stream; a later fold may
                         # collapse any of it now.
@@ -442,7 +478,7 @@ class ActionRouter:
                         f"[SESSION CACHE] Request exceeded the context budget; folding "
                         f"the event stream and retrying once for {call_type}"
                     )
-                    stream.summarize_by_LLM()
+                    self._fold(stream, system_prompt, static_prompt)
                     folded = True
                 elif not stream.collapse_undelivered_oversize():
                     # Folded, and the new events have nothing left to shrink.

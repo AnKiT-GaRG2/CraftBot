@@ -747,8 +747,11 @@ def test_gemini_caller_budget_wins_over_the_session(monkeypatch, bound_session):
 
 
 def test_context_check_reserves_the_requests_reasoning_cap(monkeypatch, bound_session):
+    import agent_core.core.impl.llm.interface as interface_module
     import app.config as app_config
 
+    # Uncatalogued, so the settings window applies.
+    monkeypatch.setattr(interface_module, "model_limits", lambda *a: None)
     monkeypatch.setattr(app_config, "get_context_window", lambda: 40_000)
     prompt = "word " * 12_000  # ~12k tokens: fits 40k - 8k, not 40k - 32k
 
@@ -824,11 +827,12 @@ def test_each_model_and_choice_is_logged_once(monkeypatch, bound_session):
 def test_fold_check_reserves_the_same_cap_as_the_pre_send_check(
     monkeypatch, bound_session
 ):
+    import agent_core.core.impl.llm.interface as interface_module
     import app.config as app_config
 
-    # window 128,000 - reserve 16,384 - the output reservation.
+    # window 128,000 - the output reservation.
+    monkeypatch.setattr(interface_module, "model_limits", lambda *a: None)
     monkeypatch.setattr(app_config, "get_context_window", lambda: 128_000)
-    monkeypatch.setattr(app_config, "get_reserve_tokens", lambda: 16_384)
 
     def assert_folds_after(iface, last_input_tokens: int) -> None:
         key = "task:action_selection"
@@ -839,15 +843,15 @@ def test_fold_check_reserves_the_same_cap_as_the_pre_send_check(
 
     unruled, _ = build_interface(monkeypatch, "openai", "gpt-4o")
     unruled.max_tokens = APP_MAX_TOKENS
-    assert_folds_after(unruled, 103_616)  # the caller's 8,000
+    assert_folds_after(unruled, 120_000)  # the caller's 8,000
 
     ruled, _ = build_interface(monkeypatch, "openai", "gpt-5.2-2025-12-11")
     ruled.max_tokens = APP_MAX_TOKENS
-    assert_folds_after(ruled, 79_616)  # default high: 32,000
+    assert_folds_after(ruled, 96_000)  # default high: 32,000
     with bound_session(C.XHIGH):
-        assert_folds_after(ruled, 47_616)  # 64,000
+        assert_folds_after(ruled, 64_000)  # 64,000
     with bound_session(C.OFF):
-        assert_folds_after(ruled, 103_616)  # no reasoning: the caller's 8,000
+        assert_folds_after(ruled, 120_000)  # no reasoning: the caller's 8,000
 
 
 def test_decision_follows_a_model_switch(monkeypatch):
@@ -1022,11 +1026,21 @@ def test_reasoning_options_handler(monkeypatch):
     unruled, _ = build_interface(monkeypatch, "openai", "gpt-4o")
     adapter = _adapter_with(SimpleNamespace(llm=unruled))
     asyncio.run(adapter._handle_reasoning_options_get(ws=None))
-    assert adapter.sent[0]["data"] == {
+    data = adapter.sent[0]["data"]
+    assert {key: data[key] for key in ("success", "model", "configurable")} == {
         "success": True,
         "model": "gpt-4o",
         "configurable": False,
     }
+    # No reasoning parameter is sent, so every choice has the same budget.
+    assert len(set(data["inputBudgets"].values())) == 1
+    lifetime = unruled.prompt_cache_lifetime()
+    assert data["cacheLifetime"] == (
+        None
+        if lifetime is None
+        else {"kind": lifetime.kind.value, "seconds": lifetime.seconds}
+    )
+    assert data["reportsCachedTokens"] is unruled.reports_cached_tokens()
 
 
 def test_session_reasoning_set_handler(tmp_path: Path):
@@ -1035,6 +1049,7 @@ def test_session_reasoning_set_handler(tmp_path: Path):
     agent = SimpleNamespace(
         session_manager=manager,
         set_session_reasoning_effort=manager.set_reasoning_effort,
+        llm=SimpleNamespace(last_request=lambda task_id, call_type: None),
     )
     adapter = _adapter_with(agent)
     try:

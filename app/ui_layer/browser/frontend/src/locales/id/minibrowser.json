@@ -2,12 +2,6 @@
   "page": {
     "label": "Peramban Mini"
   },
-  "chat": {
-    "placeholder": "Minta agen menjelajah web atau mengisi formulir…",
-    "show": "Tampilkan obrolan",
-    "hide": "Sembunyikan obrolan",
-    "loading": "Menyiapkan obrolan…"
-  },
   "toolbar": {
     "label": "Kontrol peramban",
     "back": "Kembali",
@@ -53,7 +47,7 @@
     "owner": {
       "you": "Anda",
       "main": "Obrolan utama",
-      "miniBrowser": "Obrolan ini",
+      "agent": "Agen",
       "session": "Obrolan",
       "subagent": "Subagen",
       "subagentOf": "Subagen ({{parent}})"
@@ -84,13 +78,17 @@
   "status": {
     "connecting": "Menyambung ke Peramban Mini…",
     "starting": "Memulai peramban…",
+    "resuming": "Melanjutkan dari tempat terakhir…",
+    "pausedTitle": "Peramban dijeda",
+    "pausedBody": "Halaman Anda dibuka kembali di tempat terakhir.",
+    "resume": "Lanjutkan",
     "installing": "Memasang peramban…",
     "installingHint": "Mengunduh Chromium. Ini bisa memakan waktu beberapa menit.",
     "installLog": "Log pemasangan",
     "installDone": "Peramban terpasang",
     "errorTitle": "Peramban mengalami masalah",
     "stoppedTitle": "Jelajahi web bersama agen Anda",
-    "stoppedBody": "Peramban sungguhan yang Anda gunakan bersama agen. Saksikan mereka bekerja secara langsung, atau ambil alih kapan saja.",
+    "stoppedBody": "Peramban milik obrolan ini sendiri. Saksikan agen Anda bekerja secara langsung, atau ambil alih kapan saja.",
     "start": "Mulai peramban",
     "openSite": "Buka situs",
     "tryAsking": "Coba minta agen",
@@ -108,7 +106,7 @@
     "install": "Pasang peramban",
     "installAgain": "Pasang ulang",
     "retry": "Coba lagi",
-    "profileInUseHint": "Tutup jendela CraftBot lain yang sedang memakai Peramban Mini, lalu coba lagi."
+    "profileInUseHint": "Tutup CraftBot lain yang sedang memakai peramban obrolan ini, lalu coba lagi."
   },
   "events": {
     "download": "{{name}} telah diunduh",
@@ -125,7 +123,7 @@
   },
   "confirm": {
     "shutdownTitle": "Tutup peramban?",
-    "shutdownMessage": "Agen masih menjelajah. Menutup peramban akan menutup semua tab, tetapi agen yang masih bekerja bisa membukanya lagi. Untuk menghentikan agen, tekan Hentikan di obrolannya."
+    "shutdownMessage": "Agen masih menjelajah. Menutup peramban akan menutup semua tab, tetapi agen yang masih bekerja bisa membukanya lagi. Untuk menghentikan agen, tekan Hentikan."
   },
   "passwords": {
     "title": "Kata sandi tersimpan",
@@ -193,7 +191,7 @@
     },
     "MINI_BROWSER_PROFILE_IN_USE": {
       "title": "Profil peramban sedang dipakai",
-      "message": "Jendela CraftBot lain sudah memakai profil Peramban Mini."
+      "message": "CraftBot lain sudah memakai profil peramban obrolan ini."
     },
     "MINI_BROWSER_LAUNCH_FAILED": {
       "title": "Peramban gagal dimulai",
@@ -235,6 +233,14 @@
       "title": "Terlalu banyak tab",
       "message": "Terlalu banyak tab yang terbuka. Tutup salah satu tab, lalu coba lagi."
     },
+    "MINI_BROWSER_TOO_MANY_BROWSERS": {
+      "title": "Terlalu banyak peramban terbuka",
+      "message": "Peramban obrolan lain sedang berjalan dan dipakai. Tutup salah satunya, atau tunggu agennya selesai."
+    },
+    "MINI_BROWSER_SESSION_GONE": {
+      "title": "Obrolan dihapus",
+      "message": "Obrolan ini sudah dihapus, jadi perambannya juga hilang."
+    },
     "MINI_BROWSER_TIMEOUT": {
       "title": "Waktu habis",
       "message": "Prosesnya terlalu lama. Coba lagi."
@@ -259,5 +265,57 @@
       "title": "Terjadi masalah",
       "message": "Peramban Mini mengalami masalah yang tidak terduga."
     }
+  },
+  "credentials": {
+    "title": "Kredensial",
+    "intro": "Login, kunci API, dan catatan pribadi di satu tempat.",
+    "search": "Cari kredensial",
+    "add": "Tambah kredensial",
+    "save": "Simpan kredensial",
+    "editTitle": "Edit kredensial",
+    "type": "Jenis",
+    "group": "Grup",
+    "all": "Semua item",
+    "allGroups": "Semua grup",
+    "list": "Kredensial tersimpan",
+    "kinds": {
+      "login": "Login",
+      "api_key": "Kunci API",
+      "secure_note": "Catatan aman"
+    },
+    "groups": {
+      "work": "Kerja",
+      "personal": "Pribadi",
+      "other": "Lainnya"
+    },
+    "name": "Nama",
+    "optionalName": "Nama (opsional)",
+    "optionalWebsite": "Situs web (opsional)",
+    "apiWebsiteHint": "Isi host API (misalnya api.example.com) agar agen dapat memakai kunci ini tanpa melihatnya. Permintaan harus cocok persis dengan host dan port ini, melalui HTTPS (atau HTTP di localhost). Pengalihan diblokir.",
+    "apiKey": "Kunci API",
+    "note": "Catatan",
+    "keepValue": "Kosongkan untuk mempertahankan nilai tersimpan",
+    "loading": "Memuat kredensial…",
+    "empty": "Brankas Anda dimulai di sini",
+    "emptyHint": "Tambahkan login, kunci API, atau catatan aman.",
+    "noMatches": "Tidak ada kredensial yang cocok",
+    "searchHint": "Coba pencarian lain atau ubah filter.",
+    "clearFilters": "Hapus filter",
+    "saved": "Kredensial disimpan",
+    "updated": "Kredensial diperbarui",
+    "deleted": "Kredensial dihapus",
+    "view": "Lihat nilai",
+    "viewNamed": "Lihat {{name}}",
+    "editNamed": "Edit {{name}}",
+    "deleteNamed": "Hapus {{name}}",
+    "deleteTitle": "Hapus kredensial ini?",
+    "deleteMessage": "Hapus “{{name}}”? Kredensial tersimpan akan dihapus dari brankas ini.",
+    "reveal": "Tampilkan nilai",
+    "hide": "Sembunyikan nilai",
+    "copy": "Salin nilai",
+    "copied": "Disalin ke papan klip",
+    "copyFailed": "Tidak dapat menyalin. Pilih dan salin nilai secara manual.",
+    "revealHint": "Tersembunyi hingga ditampilkan. Nilai disembunyikan lagi setelah 30 detik atau saat Anda meninggalkan jendela ini.",
+    "revealFailed": "Tidak dapat memuat nilai. Periksa koneksi dan coba lagi."
   }
 }

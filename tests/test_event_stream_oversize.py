@@ -24,6 +24,9 @@ from agent_core.core.impl.event_stream.event_stream import (
 )
 
 
+KEEP_TOKENS = 10000
+
+
 class _CountingLLM:
     consecutive_failures = 0
     _max_consecutive_failures = 5
@@ -36,26 +39,23 @@ class _CountingLLM:
         return "SUMMARY OF OLD EVENTS"
 
 
-def _stream(tmp_path, llm, event_stream_limits):
-    event_stream_limits(10000)
+def _stream(tmp_path, llm):
     return EventStream(llm=llm, temp_dir=tmp_path / "events")
 
 
-def test_appending_never_folds_on_its_own(tmp_path, event_stream_limits):
+def test_appending_never_folds_on_its_own(tmp_path):
     """The decision lives with the router; log() only appends."""
     llm = _CountingLLM()
-    es = _stream(tmp_path, llm, event_stream_limits)
+    es = _stream(tmp_path, llm)
     for i in range(400):
         es.log("action_end", f"action {i} completed " + "x " * 200)
     assert llm.calls == 0
     assert es.head_summary is None
 
 
-def test_oversized_pinned_event_is_collapsed_in_place_by_a_fold(
-    tmp_path, event_stream_limits
-):
+def test_oversized_pinned_event_is_collapsed_in_place_by_a_fold(tmp_path):
     llm = _CountingLLM()
-    es = _stream(tmp_path, llm, event_stream_limits)
+    es = _stream(tmp_path, llm)
     for i in range(60):
         es.log("action_end", f"action {i} completed " + "x " * 200)
 
@@ -66,7 +66,7 @@ def test_oversized_pinned_event_is_collapsed_in_place_by_a_fold(
     es.mark_delivered()  # the agent read it last turn
     before = es._total_tokens
 
-    es.summarize_by_LLM()
+    es.summarize_by_LLM(keep_tokens=KEEP_TOKENS)
 
     assert es._total_tokens < before
     # The record survives so the UI can still pair action_start <-> action_end...
@@ -78,13 +78,11 @@ def test_oversized_pinned_event_is_collapsed_in_place_by_a_fold(
     assert written and written[0].read_text(encoding="utf-8") == giant.strip()
 
 
-def test_a_fold_gets_under_budget_and_a_second_one_is_free(
-    tmp_path, event_stream_limits
-):
-    """One requested fold must leave the stream near keep_recent_tokens, with
+def test_a_fold_gets_under_budget_and_a_second_one_is_free(tmp_path):
+    """One requested fold must leave the stream near its keep target, with
     protected events intact; asking again with nothing foldable costs no call."""
     llm = _CountingLLM()
-    es = _stream(tmp_path, llm, event_stream_limits)
+    es = _stream(tmp_path, llm)
 
     es.log("requirements", "[ ] done_when: the ledger reconciles")
     for i in range(300):
@@ -97,20 +95,20 @@ def test_a_fold_gets_under_budget_and_a_second_one_is_free(
             )
     es.mark_delivered()
 
-    es.summarize_by_LLM()
+    es.summarize_by_LLM(keep_tokens=KEEP_TOKENS)
     after_first = es._total_tokens
     assert (
-        after_first < 10000 + 4000
-    )  # keep_recent_tokens plus a pinned/protected margin
+        after_first < KEEP_TOKENS + 4000
+    )  # the keep target plus a pinned/protected margin
     assert any(r.event.kind == "requirements" for r in es.tail_events)
 
     calls = llm.calls
-    es.summarize_by_LLM()
+    es.summarize_by_LLM(keep_tokens=KEEP_TOKENS)
     assert llm.calls == calls
     assert es._total_tokens <= after_first
 
 
-def test_tiny_foldable_region_is_pruned_not_summarized(tmp_path, event_stream_limits):
+def test_tiny_foldable_region_is_pruned_not_summarized(tmp_path):
     """The 31,907 -> 31,529 case: a 15s LLM call that reclaimed 378 tokens.
 
     When the tail is dominated by events summarization is not allowed to touch
@@ -118,7 +116,7 @@ def test_tiny_foldable_region_is_pruned_not_summarized(tmp_path, event_stream_li
     be far too small to be worth a blocking round trip. Prune it instead.
     """
     llm = _CountingLLM()
-    es = _stream(tmp_path, llm, event_stream_limits)
+    es = _stream(tmp_path, llm)
 
     # A small foldable prefix the model has read...
     for i in range(3):
@@ -128,7 +126,7 @@ def test_tiny_foldable_region_is_pruned_not_summarized(tmp_path, event_stream_li
     for i in range(80):
         es.log("action_end", f"result {i}: " + "r " * 500)
 
-    es.summarize_by_LLM()
+    es.summarize_by_LLM(keep_tokens=KEEP_TOKENS)
 
     assert llm.calls == 0
     messages = [r.event.message for r in es.tail_events]

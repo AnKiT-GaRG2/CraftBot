@@ -2474,7 +2474,7 @@ async def _wait_for_user(core: Any, tab: Any, timeout_s: float) -> Dict[str, Any
             result["message"] = (
                 f"The user did not take control of this tab within {round(seconds)} s. "
                 "Ask them in chat what to do, as your final message (for example to "
-                "solve the check in the Mini Browser page and press Hand back), and "
+                "solve the check in this chat's browser panel and press Hand back), and "
                 "continue from a fresh mini_browser_read when they reply."
             )
             result["page"] = await page_observation(core, tab)
@@ -2809,12 +2809,15 @@ async def screenshot(core: Any, tab: Any, *, full_page: bool = False) -> Dict[st
 
 
 async def login(
-    core: Any, tab: Any, *, username: Optional[str] = None, submit: bool = True
+    core: Any, tab: Any, *, username: Optional[str] = None,
+    login_name: Optional[str] = None, submit: bool = True
 ) -> Dict[str, Any]:
     """Sign in with a saved login from the password vault."""
     from app.mini_browser.login import autofill
 
-    return await autofill(core, tab, username=username, submit=submit)
+    return await autofill(
+        core, tab, username=username, login_name=login_name, submit=submit
+    )
 
 
 _CLOSED_CODES = frozenset(

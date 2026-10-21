@@ -40,6 +40,20 @@
     "defaultTag": "默认",
     "notConfigurable": "{{model}} 不支持调整推理",
     "clamped": "此模型不支持“{{requested}}”，因此使用“{{effective}}”。",
+    "context": {
+      "label": "上下文",
+      "summarizesAt": "达到 {{max}} 时总结"
+    },
+    "cache": {
+      "label": "缓存",
+      "hit": "{{percent}} 已缓存",
+      "notReported": "未报告",
+      "notYet": "尚未缓存",
+      "timeLeft": "剩余时间",
+      "about": "~{{time}}",
+      "expired": "已过期",
+      "noExpiry": "无固定有效期"
+    },
     "choice": {
       "provider_default": "服务商默认",
       "off": "关闭",
@@ -98,5 +112,14 @@
     "replyTooltip": "回复此消息",
     "copyTooltip": "复制消息",
     "copiedTooltip": "已复制！"
+  },
+  "browserPanel": {
+    "show": "显示本对话的浏览器",
+    "running": "本对话的浏览器已开启",
+    "browsing": "智能体正在浏览",
+    "region": "浏览器面板"
+  },
+  "panel": {
+    "close": "关闭面板"
   }
 }
