@@ -206,7 +206,8 @@ def _sql_statements(query: str) -> List[str]:
             in_dollar = None if in_dollar == token else (in_dollar or token)
             buf.append(token)
         elif token == ";" and not in_dollar:
-            parts.append("".join(buf)); buf = []
+            parts.append("".join(buf))
+            buf = []
         else:
             buf.append(token)
     parts.append("".join(buf))

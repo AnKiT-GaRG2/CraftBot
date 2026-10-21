@@ -432,6 +432,22 @@ class ModelFactory:
             }
 
         if provider == "anthropic":
+            try:
+                from craftos_integrations.llm_oauth.tokens import has_credential
+
+                claude_code_connected = has_credential(provider)
+            except ImportError:
+                claude_code_connected = False
+
+            if claude_code_connected:
+                from agent_core.core.models.claude_code_client import ClaudeCodeClient
+
+                return {
+                    **empty_context,
+                    "anthropic_client": ClaudeCodeClient(),
+                    "initialized": True,
+                    "auth_mode": "subscription",
+                }
             if not api_key:
                 if deferred:
                     return empty_context

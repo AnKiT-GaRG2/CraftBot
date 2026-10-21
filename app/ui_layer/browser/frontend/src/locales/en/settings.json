@@ -145,6 +145,10 @@
       "startingShort": "Starting..."
     },
     "subscription": {
+      "recoveryHint": "This saved subscription is still selected. Disconnect it to use an API key, or sign in again.",
+      "claudeProfileNote": "Sign in separately for CraftBot. Disconnect signs out of this profile without affecting your standalone Claude Code login.",
+      "disconnectFailed": "Could not disconnect the subscription. Please try again.",
+      "connectFailed": "Could not sign in to the subscription. Please try again.",
       "label": "Subscription",
       "awaitingCode": "Awaiting code",
       "pastePlaceholder": "Paste the code from the sign-in page",
