@@ -1,6 +1,7 @@
 """Artifact validation, delivery, history migrations and session-safe revisions."""
 
 import asyncio
+import base64
 from concurrent.futures import ThreadPoolExecutor
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, Mock
@@ -13,7 +14,13 @@ from agent_core.core.impl.action.executor import ActionExecutor
 from agent_core.core.impl.event_stream.manager import EventStreamManager
 from app.data.action.render_ui import render_ui
 from app.agent_base import AgentBase
-from app.generative_ui import MAX_HTML_BYTES, closed_artifact, make_artifact
+from app import generative_ui
+from app.generative_ui import (
+    MAX_HTML_BYTES,
+    closed_artifact,
+    make_artifact,
+    read_images,
+)
 from app.internal_action_interface import InternalActionInterface
 from app.state.state_manager import StateManager
 from app.ui_layer.adapters.base import InterfaceAdapter
@@ -41,6 +48,11 @@ def artifact():
         {"connect_origins": "https://api.example.com"},
         {"connect_origins": [{}]},
         {"connect_origins": ["https://api.example.com"] * 9},
+        {"image_origins": ["http://tile.example.org"]},
+        {"image_origins": "https://tile.example.org"},
+        {"libraries": "three"},
+        {"libraries": ["three", "jquery"]},
+        {"libraries": [{}]},
     ],
 )
 def test_rejects_invalid_artifacts(change):
@@ -199,7 +211,10 @@ def test_render_action_revisions_are_session_scoped(monkeypatch):
     monkeypatch.setattr(InternalActionInterface, "do_chat", delivery)
     monkeypatch.setattr(
         "app.usage.chat_storage.get_chat_storage",
-        lambda: SimpleNamespace(get_latest_ui_artifact=lambda sid, aid: None),
+        lambda: SimpleNamespace(
+            get_latest_ui_artifact=lambda sid, aid: None,
+            store_ui_images=lambda sid, aid, images: {},
+        ),
     )
     data = {"artifact_id": original["id"], "title": "Revised", "html": "<p>Revised</p>"}
     result = asyncio.run(render_ui({**data, "_session_id": "mine"}))
@@ -365,3 +380,254 @@ def test_the_close_request_reaches_storage_events_and_every_client(tmp_path):
         asyncio.run(BrowserAdapter._handle_generative_ui_close(adapter, bad))
     assert adapter._broadcast.await_count == 1
     chat._db.shutdown()
+
+
+# A 1x1 PNG.
+PNG = base64.b64decode(
+    "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwAEhQGAhKmMIQAAAABJRU5ErkJggg=="
+)
+
+
+def test_libraries_and_image_origins_are_explicit_and_normalized():
+    data = make_artifact(
+        {
+            "title": "Map",
+            "html": "<div id=map></div>",
+            "libraries": ["three", "leaflet", "three"],
+            "image_origins": ["https://Tile.OpenStreetMap.org:443/"],
+        }
+    )
+    assert data["libraries"] == ["leaflet", "three"]
+    assert data["image_origins"] == ["https://tile.openstreetmap.org"]
+    plain = artifact()
+    assert plain["libraries"] == [] and plain["image_origins"] == []
+
+
+def test_images_are_read_by_their_own_bytes(tmp_path):
+    files = {
+        "photo": (b"\xff\xd8\xff\xe0" + b"0" * 16, "jpg"),
+        "logo": (PNG, "png"),
+        "loop": (b"GIF89a" + b"0" * 16, "gif"),
+        "art": (b"RIFF\x10\x00\x00\x00WEBPVP8 " + b"0" * 16, "webp"),
+    }
+    paths = {}
+    for name, (data, _) in files.items():
+        (tmp_path / f"{name}.bin").write_bytes(data)
+        paths[name] = str(tmp_path / f"{name}.bin")
+    assert read_images(paths) == files
+    assert read_images({}) == {}
+
+
+def test_rejects_invalid_images(tmp_path, monkeypatch):
+    image = tmp_path / "hero.png"
+    image.write_bytes(PNG)
+    (tmp_path / "notes.txt").write_text("not an image")
+    for value in (
+        "hero.png",
+        {"hero-image": str(image)},
+        {"1hero": str(image)},
+        {"hero": str(tmp_path / "missing.png")},
+        {"hero": str(tmp_path)},
+        {"hero": 5},
+        {"hero": str(tmp_path / "notes.txt")},
+        {f"i{n}": str(image) for n in range(9)},
+    ):
+        with pytest.raises(ValueError):
+            read_images(value)
+    monkeypatch.setattr(generative_ui, "MAX_IMAGE_BYTES", len(PNG) - 1)
+    with pytest.raises(ValueError):
+        read_images({"hero": str(image)})
+    monkeypatch.setattr(generative_ui, "MAX_IMAGE_BYTES", len(PNG))
+    monkeypatch.setattr(generative_ui, "MAX_TOTAL_IMAGE_BYTES", len(PNG) * 2 - 1)
+    with pytest.raises(ValueError):
+        read_images({"one": str(image), "two": str(image)})
+
+
+def test_output_images_live_with_the_chat_history(tmp_path):
+    """Stored per output (content-addressed, so revisions share them), served
+    only by their exact stored path, and gone with the output or its chat."""
+    storage = ChatStorage(str(tmp_path / "chat.db"))
+    first = storage.store_ui_images("mine", "map", {"hero": (PNG, "png")})
+    again = storage.store_ui_images("mine", "map", {"cover": (PNG, "png")})
+    assert first["hero"] == again["cover"]
+    assert storage.ui_image_file(first["hero"]).read_bytes() == PNG
+    other = storage.store_ui_images("mine", "chart", {"hero": (PNG, "png")})
+    theirs = storage.store_ui_images("theirs", "map", {"hero": (PNG, "png")})
+    assert len({first["hero"], other["hero"], theirs["hero"]}) == 3
+    assert storage.store_ui_images("mine", "plain", {}) == {}
+    for path in (
+        "",
+        "../chat.db",
+        first["hero"].replace(".png", ".txt"),
+        first["hero"] + "/x",
+        "/".join(first["hero"].split("/")[:2]),
+        first["hero"].replace("/", "\\"),
+    ):
+        assert storage.ui_image_file(path) is None
+
+    stored(
+        storage,
+        "r1",
+        "mine",
+        {**make_artifact({"title": "Map", "html": "<p>"}), "id": "map"},
+    )
+    storage.close_ui_artifact("mine", "map")
+    assert storage.ui_image_file(first["hero"]) is None
+    assert storage.ui_image_file(other["hero"]) is not None
+    storage.clear_messages("mine")
+    assert storage.ui_image_file(other["hero"]) is None
+    assert storage.ui_image_file(theirs["hero"]) is not None
+    storage.clear_messages()
+    assert storage.ui_image_file(theirs["hero"]) is None
+
+
+def test_render_action_stores_images_for_the_output(tmp_path, monkeypatch):
+    image = tmp_path / "hero.png"
+    image.write_bytes(PNG)
+    storage = ChatStorage(str(tmp_path / "chat.db"))
+    monkeypatch.setattr("app.usage.chat_storage.get_chat_storage", lambda: storage)
+    delivery = AsyncMock()
+    monkeypatch.setattr(InternalActionInterface, "do_chat", delivery)
+    data = {
+        "title": "Trip",
+        "html": "<img id=hero>",
+        "images": {"hero": str(image)},
+        "_session_id": "mine",
+    }
+    result = asyncio.run(render_ui(data))
+    stored_images = delivery.call_args.kwargs["ui_artifact"]["images"]
+    assert storage.ui_image_file(stored_images["hero"]).read_bytes() == PNG
+    assert stored_images["hero"].split("/")[1] == result["artifact_id"]
+
+    bad = asyncio.run(render_ui({**data, "images": {"hero": str(tmp_path)}}))
+    assert bad["status"] == "error" and delivery.call_count == 1
+
+
+def test_stored_images_are_served_by_exact_path_only(tmp_path, monkeypatch):
+    from aiohttp import web
+
+    storage = ChatStorage(str(tmp_path / "chat.db"))
+    monkeypatch.setattr("app.usage.chat_storage.get_chat_storage", lambda: storage)
+    path = storage.store_ui_images("mine", "map", {"hero": (PNG, "png")})["hero"]
+    serve = BrowserAdapter._generative_ui_image_handler
+
+    response = asyncio.run(serve(None, SimpleNamespace(match_info={"path": path})))
+    assert response.headers["Content-Type"] == "image/png"
+    assert response.headers["X-Content-Type-Options"] == "nosniff"
+    for bad in ("../chat.db", path.replace(".png", ".gif"), ""):
+        with pytest.raises(web.HTTPNotFound):
+            asyncio.run(serve(None, SimpleNamespace(match_info={"path": bad})))
+
+
+def test_map_settings_take_defaults_for_unusable_values(monkeypatch):
+    from app import config
+
+    defaults = config._get_default_settings()["generative_ui"]
+    monkeypatch.setattr(config, "get_settings", lambda: {})
+    assert config.get_generative_ui_settings() == defaults
+    custom = {
+        "map_tiles_url": "https://tiles.example.org/{z}/{x}/{y}.png",
+        "map_attribution": "Example",
+        "map_max_zoom": 17,
+    }
+    monkeypatch.setattr(config, "get_settings", lambda: {"generative_ui": custom})
+    assert config.get_generative_ui_settings() == custom
+    for bad in (
+        {"map_tiles_url": "http://tiles.example.org/{z}/{x}/{y}.png"},
+        {"map_tiles_url": "https://tiles.example.org/{z}/{x}.png"},
+        {"map_attribution": 3},
+        {"map_max_zoom": 23},
+        {"map_max_zoom": True},
+    ):
+        monkeypatch.setattr(
+            config, "get_settings", lambda bad=bad: {"generative_ui": bad}
+        )
+        assert config.get_generative_ui_settings() == defaults
+
+
+def test_tile_lifetime_follows_the_servers_caching_headers():
+    from app import map_tiles
+
+    assert map_tiles._lifetime({"Cache-Control": "public, max-age=600"}) == 600
+    assert map_tiles._lifetime({"Cache-Control": "no-store"}) == 0
+    assert map_tiles._lifetime({"Cache-Control": "no-cache, max-age=600"}) == 0
+    assert map_tiles._lifetime({"Expires": "Thu, 01 Jan 1970 00:00:00 GMT"}) == 0
+    assert map_tiles._lifetime({"Expires": "not a date"}) == 0
+    assert map_tiles._lifetime({}) == map_tiles.DEFAULT_TILE_SECONDS
+    assert map_tiles.valid_tile(0, 0, 0, 19)
+    assert map_tiles.valid_tile(3, 7, 7, 19)
+    assert not map_tiles.valid_tile(3, 8, 0, 19)
+    assert not map_tiles.valid_tile(20, 0, 0, 19)
+
+
+def test_tiles_are_fetched_once_and_cached_for_their_lifetime(tmp_path, monkeypatch):
+    from app import map_tiles
+
+    template = "https://tiles.example.org/{z}/{x}/{y}.png"
+    monkeypatch.setattr(map_tiles, "_cache_root", tmp_path)
+    monkeypatch.setattr(
+        map_tiles,
+        "get_generative_ui_settings",
+        lambda: {"map_tiles_url": template},
+    )
+    downloads = []
+
+    async def download(url):
+        downloads.append(url)
+        await asyncio.sleep(0.01)
+        return PNG, "image/png", 600 if url.endswith("/1/0/1.png") else 0
+
+    monkeypatch.setattr(map_tiles, "_download", download)
+
+    async def run():
+        # Requests for one tile share a download.
+        first = await asyncio.gather(*(map_tiles.get_tile(1, 0, 1) for _ in range(3)))
+        cached = await map_tiles.get_tile(1, 0, 1)
+        uncacheable = [await map_tiles.get_tile(2, 1, 1) for _ in range(2)]
+        return first, cached, uncacheable
+
+    first, cached, uncacheable = asyncio.run(run())
+    assert first == [(PNG, "image/png")] * 3 and cached == (PNG, "image/png")
+    assert uncacheable == [(PNG, "image/png")] * 2
+    assert downloads == [
+        "https://tiles.example.org/1/0/1.png",
+        "https://tiles.example.org/2/1/1.png",
+        "https://tiles.example.org/2/1/1.png",
+    ]
+
+
+def test_tile_routes_serve_tiles_and_map_details(monkeypatch):
+    from aiohttp import web
+
+    from app import config, map_tiles
+
+    monkeypatch.setattr(
+        config,
+        "get_generative_ui_settings",
+        lambda: {
+            "map_tiles_url": "https://tiles.example.org/{z}/{x}/{y}.png",
+            "map_attribution": "Example tiles",
+            "map_max_zoom": 5,
+        },
+    )
+    details = asyncio.run(BrowserAdapter._generative_ui_map_handler(None, None))
+    assert details.text == '{"attribution": "Example tiles", "maxZoom": 5}'
+
+    async def tile(z, x, y):
+        if x == 1:
+            raise map_tiles.TileUnavailable("503")
+        return PNG, "image/png"
+
+    monkeypatch.setattr(map_tiles, "get_tile", tile)
+    serve = BrowserAdapter._generative_ui_tile_handler
+
+    def request(z, x, y):
+        return SimpleNamespace(match_info={"z": str(z), "x": str(x), "y": str(y)})
+
+    response = asyncio.run(serve(None, request(2, 0, 3)))
+    assert response.body == PNG and response.content_type == "image/png"
+    with pytest.raises(web.HTTPBadGateway):
+        asyncio.run(serve(None, request(2, 1, 3)))
+    for z, x, y in ((6, 0, 0), (2, 4, 0), (2, 0, 4)):
+        with pytest.raises(web.HTTPNotFound):
+            asyncio.run(serve(None, request(z, x, y)))

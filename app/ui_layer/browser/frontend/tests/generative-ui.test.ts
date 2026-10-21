@@ -1,6 +1,8 @@
 import { test, expect, type Page } from '@playwright/test'
 
 const preview = (page: Page) => page.frameLocator('iframe')
+// A 1x1 PNG, for map tiles and stored images.
+const PNG = Buffer.from('iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwAEhQGAhKmMIQAAAABJRU5ErkJggg==', 'base64')
 async function previewAction(page: Page, name: string) {
   const button = page.getByRole('button', { name, exact: true })
   if (!await button.isVisible()) await page.getByLabel('Preview options', { exact: true }).click()
@@ -9,15 +11,20 @@ async function previewAction(page: Page, name: string) {
 }
 async function open(page: Page) {
   await page.route('**/api/agent-profile-picture', route => route.fulfill({ contentType: 'image/svg+xml', body: '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 32 32"><circle cx="16" cy="16" r="14" fill="#FF4F18"/></svg>' }))
+  await page.route('**/api/generative-ui/tiles', route => route.fulfill({ json: { attribution: 'Test tiles', maxZoom: 18 } }))
+  await page.route('**/api/generative-ui/tiles/*/*/*', route => route.fulfill({ contentType: 'image/png', body: PNG }))
   await page.goto('/tests/generative-ui.html')
   await expect(preview(page).getByRole('heading', { name: 'Weeknight tomato pasta' })).toBeVisible()
 }
 // The round button at the chat's top left: opens the outputs, or closes them when on show.
 const outputsButton = (page: Page) => page.getByRole('button', { name: 'Show outputs', exact: true })
 const seam = (page: Page) => page.getByRole('separator', { name: 'Resize conversation and output' })
-async function custom(page: Page, html: string, connect_origins: string[] = []) {
-  await page.evaluate(({ html, connect_origins }) => window.dispatchEvent(new CustomEvent('fixture-artifact', { detail: { id: 'custom', title: 'Custom interface', revision: 1, html, connect_origins } })), { html, connect_origins })
+async function custom(page: Page, html: string, connect_origins: string[] = [], extra: Record<string, unknown> = {}) {
+  await page.evaluate(({ html, connect_origins, extra }) => window.dispatchEvent(new CustomEvent('fixture-artifact', { detail: { id: 'custom', title: 'Custom interface', revision: 1, html, connect_origins, ...extra } })), { html, connect_origins, extra })
 }
+// The page records what its content policy blocked (the panel shows no page errors).
+const REPORT_BLOCKED = `<script>addEventListener('securitypolicyviolation', e => { const root = document.documentElement; root.dataset.blocked = ((root.dataset.blocked || '') + ' ' + e.violatedDirective).trim() })</script>`
+const blocked = (page: Page) => preview(page).locator('html')
 
 test('cooking controls persist across unmount, reload and revision; reset clears progress', async ({ page }) => {
   await open(page)
@@ -526,13 +533,13 @@ test('API origins are declared per output, with undeclared destinations and redi
   const denied: string[] = []
   await page.route('https://other.example.com/**', route => { denied.push(route.request().url()); return route.abort() })
   await open(page)
-  await custom(page, `<p id="data">Loading</p><script>
+  await custom(page, `${REPORT_BLOCKED}<p id="data">Loading</p><script>
     fetch('https://data.example.org/count').then(r => r.json()).then(d => document.getElementById('data').textContent = 'Count ' + d.count);
     fetch('https://other.example.com/undeclared').catch(() => {});
     fetch('https://api.example.com/redirect').catch(() => {});
   </script>`, ['https://DATA.example.org:443/', 'https://api.example.com'])
   await expect(preview(page).locator('#data')).toHaveText('Count 42')
-  await expect(page.getByRole('alert')).toContainText('Blocked resource:')
+  await expect(blocked(page)).toHaveAttribute('data-blocked', /connect-src/)
   expect(requests).toEqual(['https://data.example.org/count'])
   expect(denied).toEqual([])
 })
@@ -547,8 +554,8 @@ for (const origins of [
   const requests: string[] = []
   await page.route('https://data.example.org/**', route => { requests.push(route.request().url()); return route.abort() })
   await open(page)
-  await custom(page, `<p>Invalid policy</p><script>fetch('https://data.example.org/count').catch(() => {});</script>`, origins)
-  await expect(page.getByRole('alert')).toContainText('Blocked resource:')
+  await custom(page, `${REPORT_BLOCKED}<p>Invalid policy</p><script>fetch('https://data.example.org/count').catch(() => {});</script>`, origins)
+  await expect(blocked(page)).toHaveAttribute('data-blocked', /connect-src/)
   expect(requests).toEqual([])
 })
 
@@ -573,7 +580,7 @@ test('sandbox denies parent/storage access, external scripts and undeclared fetc
   await open(page)
   const outgoing: string[] = []
   await page.route('https://blocked.invalid/**', route => { outgoing.push(route.request().url()); return route.abort() })
-  await custom(page, `<meta http-equiv="refresh" content="0;url=https://blocked.invalid/refresh"><img src="https://blocked.invalid/image"><iframe src="https://blocked.invalid/frame"></iframe><p id="result"></p><script>
+  await custom(page, `${REPORT_BLOCKED}<meta http-equiv="refresh" content="0;url=https://blocked.invalid/refresh"><img src="https://blocked.invalid/image"><iframe src="https://blocked.invalid/frame"></iframe><p id="result"></p><script>
     const results = [];
     try { parent.document.body; results.push('parent-access'); } catch { results.push('parent-blocked'); }
     try { localStorage.getItem('secret'); results.push('storage-access'); } catch { results.push('storage-blocked'); }
@@ -582,21 +589,23 @@ test('sandbox denies parent/storage access, external scripts and undeclared fetc
     fetch('https://blocked.invalid/data').catch(() => {});
   </script>`)
   await expect(preview(page).locator('#result')).toHaveText('parent-blocked,storage-blocked')
-  await expect(page.getByRole('alert')).toContainText('Blocked resource:')
+  await expect(blocked(page)).toHaveAttribute('data-blocked', /script-src/)
+  await expect(blocked(page)).toHaveAttribute('data-blocked', /connect-src/)
   expect(outgoing).toEqual([])
   await expect(page.locator('iframe')).toHaveAttribute('sandbox', 'allow-scripts allow-forms')
 })
 
-test('runtime errors are visible, forged messages are ignored and oversized state is rejected', async ({ page }) => {
+test('page errors stay out of the panel, forged messages are ignored and oversized state is rejected', async ({ page }) => {
   await open(page)
-  await page.evaluate(() => window.postMessage({ channel: 'craftbot-generative-ui', type: 'error', message: 'forged', token: document.querySelector('iframe')?.srcdoc.match(/const token = "([^"]+)/)?.[1] }, '*'))
-  await expect(page.getByRole('alert')).toHaveCount(0)
-  await custom(page, `<script>window.craftbot.saveState({ text: 'x'.repeat(70000) });</script>`)
-  await expect(page.getByRole('alert')).toContainText('State exceeds 64 KB')
-  await custom(page, `<p>Broken example</p><script>throw new Error('Example runtime failure')</script>`)
-  await expect(page.getByRole('alert')).toContainText('Example runtime failure')
+  await page.evaluate(() => window.postMessage({ channel: 'craftbot-generative-ui', type: 'state', state: { forged: true }, token: document.querySelector('iframe')?.srcdoc.match(/const token = "([^"]+)/)?.[1] }, '*'))
+  await custom(page, `<p id="result"></p><script>try { window.craftbot.saveState({ text: 'x'.repeat(70000) }) } catch (error) { document.getElementById('result').textContent = error.message }</script>`)
+  await expect(preview(page).locator('#result')).toHaveText('State exceeds 64 KB')
+  await custom(page, `<p>Broken example</p><script>throw new Error('Example runtime failure')</script><script>Promise.reject(new Error('Rejected'))</script><img src="https://blocked.invalid/image">`)
+  await expect(preview(page).getByText('Broken example')).toBeVisible()
   await previewAction(page, 'Reload preview')
-  await expect(page.getByRole('alert')).toContainText('Example runtime failure')
+  await expect(preview(page).getByText('Broken example')).toBeVisible()
+  await expect(page.getByRole('alert')).toHaveCount(0)
+  expect(await page.evaluate(() => JSON.stringify(sessionStorage))).not.toContain('forged')
 })
 
 test('document attributes and state strings survive rendering without executing injected markup', async ({ page }) => {
@@ -670,4 +679,123 @@ test('the browser opens by itself when the agent starts browsing, per session', 
   await expect(preview(page).getByRole('heading', { name: 'Weeknight tomato pasta' })).toBeVisible()
   await page.getByRole('button', { name: 'Switch session' }).click()
   await expect(page.getByRole('region', { name: 'Browser panel' })).toBeVisible()
+})
+
+// Bundling a library the first time can take the dev server several seconds.
+const LIBRARY_LOAD = { timeout: 60_000 }
+
+test('libraries load as globals before the page code runs, without any network request', async ({ page }) => {
+  await open(page)
+  const outgoing: string[] = []
+  page.on('request', request => { if (!request.url().startsWith('http://127.0.0.1:7935/') && !request.url().startsWith('data:')) outgoing.push(request.url()) })
+  await custom(page, `<div id="map" style="height:200px"></div><canvas id="chart"></canvas><i data-lucide="map-pin"></i><p id="result"></p><script>
+    const results = [typeof L.map, typeof THREE.Scene, typeof THREE.OrbitControls, typeof Chart, typeof Motion.animate, typeof Motion.stagger, typeof lucide.createIcons];
+    lucide.createIcons();
+    const map = L.map('map').setView([51.5, -0.1], 13);
+    L.marker([51.5, -0.1]).addTo(map);
+    new Chart(document.getElementById('chart'), { type: 'bar', data: { labels: ['a', 'b'], datasets: [{ data: [1, 2] }] } });
+    Motion.animate('#result', { opacity: [0, 1] }, { duration: 0.2 });
+    document.getElementById('result').textContent = results.join(',');
+  </script>`, [], { libraries: ['chart', 'leaflet', 'lucide', 'motion', 'three'] })
+  await expect(preview(page).locator('#result')).toHaveText('function,function,function,function,function,function,function', LIBRARY_LOAD)
+  await expect(preview(page).locator('svg.lucide-map-pin')).toBeVisible()
+  // Leaflet's marker and stylesheet images are inline.
+  await expect.poll(() => preview(page).locator('.leaflet-marker-icon').evaluate(image => (image as HTMLImageElement).naturalWidth)).toBeGreaterThan(0)
+  await expect(preview(page).locator('.leaflet-pane').first()).toHaveCSS('position', 'absolute')
+  await expect.poll(() => preview(page).locator('#chart').evaluate(canvas => (canvas as HTMLCanvasElement).width)).toBeGreaterThan(0)
+  await expect(page.getByRole('alert')).toHaveCount(0)
+  expect(outgoing).toEqual([])
+})
+
+test('only listed libraries load, and an invalid persisted list loads none', async ({ page }) => {
+  await open(page)
+  const probe = `<p id="result"></p><script>document.getElementById('result').textContent = [typeof L, typeof THREE, typeof Chart].join(',')</script>`
+  await custom(page, probe, [], { libraries: ['chart'] })
+  await expect(preview(page).locator('#result')).toHaveText('undefined,undefined,function', LIBRARY_LOAD)
+  await custom(page, probe, [], { libraries: ['chart', 'jquery'] })
+  await expect(preview(page).locator('#result')).toHaveText('undefined,undefined,undefined')
+})
+
+test('libraries follow a reduced-motion preference', async ({ page }) => {
+  await page.emulateMedia({ reducedMotion: 'reduce' })
+  await open(page)
+  await custom(page, `<p id="result"></p><script>document.getElementById('result').textContent = [Motion.MotionGlobalConfig.skipAnimations, Chart.defaults.animation].join(',')</script>`, [], { libraries: ['chart', 'motion'] })
+  await expect(preview(page).locator('#result')).toHaveText('true,false', LIBRARY_LOAD)
+})
+
+test('maps get their tiles through CraftBot; web images load from declared origins only', async ({ page }) => {
+  await open(page)
+  const tiles: string[] = []
+  page.on('request', request => { if (request.url().includes('/api/generative-ui/tiles/')) tiles.push(new URL(request.url()).pathname) })
+  const photos: string[] = []
+  await page.route('https://photos.example.com/**', route => { photos.push(route.request().url()); return route.fulfill({ contentType: 'image/png', body: PNG }) })
+  const denied: string[] = []
+  await page.route('https://tile.example.org/**', route => { denied.push(route.request().url()); return route.abort() })
+  await custom(page, `${REPORT_BLOCKED}<div id="map" style="height:200px"></div><div id="other" style="height:100px"></div><img id="photo" src="https://photos.example.com/cat.png"><script>
+    L.map('map').setView([51.5, -0.1], 3).addLayer(L.tileLayer.craftbot());
+    L.tileLayer('https://tile.example.org/{z}/{x}/{y}.png').addTo(L.map('other').setView([0, 0], 1));
+  </script>`, [], { libraries: ['leaflet'], image_origins: ['https://Photos.Example.com'] })
+  await expect.poll(() => preview(page).locator('#map .leaflet-tile-loaded').count(), LIBRARY_LOAD).toBeGreaterThan(0)
+  expect(tiles.length).toBeGreaterThan(0)
+  expect(tiles.every(path => /^\/api\/generative-ui\/tiles\/3\/\d+\/\d+$/.test(path))).toBe(true)
+  await expect(preview(page).locator('#map .leaflet-control-attribution')).toContainText('Test tiles')
+  await expect.poll(() => preview(page).locator('#photo').evaluate(image => (image as HTMLImageElement).naturalWidth)).toBe(1)
+  expect(photos).toHaveLength(1)
+  // A tile server the page names itself is never contacted.
+  await expect(blocked(page)).toHaveAttribute('data-blocked', /img-src/)
+  expect(denied).toEqual([])
+})
+
+test('colours follow the host theme: tokens, light-dark(), charts, map controls and a theme event', async ({ page }) => {
+  await open(page)
+  await custom(page, `<div id="box" style="color: light-dark(rgb(1, 1, 1), rgb(2, 2, 2))">Box</div><p id="events">0</p><div id="map" style="height:120px"></div><canvas id="chart"></canvas><script>
+    let events = 0;
+    addEventListener('craftbot-theme', () => { document.getElementById('events').textContent = String(++events) });
+    L.map('map').setView([51.5, -0.1], 3).addLayer(L.tileLayer.craftbot());
+    window.chart = new Chart(document.getElementById('chart'), { type: 'bar', data: { labels: ['a'], datasets: [{ data: [1] }] } });
+  </script>`, [], { libraries: ['chart', 'leaflet'] })
+  const box = preview(page).locator('#box')
+  await expect(box).toHaveCSS('color', 'rgb(1, 1, 1)', LIBRARY_LOAD)
+  const tickColor = () => preview(page).locator('#chart').evaluate(() => (window as unknown as { chart: { scales: { x: { options: { ticks: { color: string } } } } } }).chart.scales.x.options.ticks.color)
+  const lightTicks = await tickColor()
+  const zoom = preview(page).locator('.leaflet-control-zoom-in')
+  const lightZoom = await zoom.evaluate(element => getComputedStyle(element).backgroundColor)
+  await page.evaluate(() => document.documentElement.dataset.theme = 'dark')
+  await expect(box).toHaveCSS('color', 'rgb(2, 2, 2)')
+  await expect(preview(page).locator('#events')).toHaveText('1')
+  await expect.poll(tickColor).not.toBe(lightTicks)
+  await expect.poll(() => zoom.evaluate(element => getComputedStyle(element).backgroundColor)).not.toBe(lightZoom)
+  // The load handshake re-sends the same theme: no event for an unchanged theme.
+  await previewAction(page, 'Reload preview')
+  await expect(preview(page).locator('#box')).toHaveCSS('color', 'rgb(2, 2, 2)')
+  await expect(preview(page).locator('#events')).toHaveText('0')
+})
+
+test('stored images reach the page as window.craftbot.images; an unavailable one can be retried', async ({ page }) => {
+  let available = true
+  const fetched: string[] = []
+  await page.route('**/api/generative-ui/**', route => {
+    fetched.push(new URL(route.request().url()).pathname)
+    return available ? route.fulfill({ contentType: 'image/png', body: PNG }) : route.fulfill({ status: 404, body: '' })
+  })
+  await open(page)
+  const path = '0123456789abcdef/custom/fedcba9876543210.png'
+  const html = `<img id="hero" alt="Hero"><p id="names"></p><script>
+    document.getElementById('hero').src = window.craftbot.images.hero;
+    document.getElementById('names').textContent = Object.keys(window.craftbot.images).join(',') || 'none';
+  </script>`
+  await custom(page, html, [], { images: { hero: path } })
+  await expect(preview(page).locator('#names')).toHaveText('hero')
+  await expect.poll(() => preview(page).locator('#hero').evaluate(image => (image as HTMLImageElement).naturalWidth)).toBe(1)
+  expect(fetched).toEqual([`/api/generative-ui/${path}`])
+  // Invalid persisted metadata loads no images and fetches nothing.
+  await custom(page, html, [], { images: { hero: '../chat.db' } })
+  await expect(preview(page).locator('#names')).toHaveText('none')
+  expect(fetched).toHaveLength(1)
+  available = false
+  await custom(page, html, [], { images: { hero: path.replace('custom', 'other') } })
+  await expect(page.getByRole('alert')).toContainText('Image "hero" is unavailable (404)')
+  available = true
+  await page.getByRole('button', { name: 'Try again' }).click()
+  await expect(preview(page).locator('#names')).toHaveText('hero')
 })

@@ -8,8 +8,11 @@ Provides local persistence for every session's chat history across restarts.
 
 from __future__ import annotations
 
+import hashlib
 import json
 import logging
+import re
+import shutil
 import sqlite3
 from dataclasses import dataclass
 from pathlib import Path
@@ -22,6 +25,17 @@ try:
 except Exception:
     logger = logging.getLogger(__name__)
     logging.basicConfig(level=logging.INFO, format="%(levelname)s: %(message)s")
+
+
+# <session key>/<artifact id>/<content hash>.<extension> (store_ui_images).
+_UI_IMAGE_PATH = re.compile(
+    r"[0-9a-f]{16}/[A-Za-z0-9_-]{1,80}/[0-9a-f]{16}\.(?:png|jpg|gif|webp)"
+)
+
+
+def _ui_session_key(session_id: str) -> str:
+    """A session's images folder: any session id, as a fixed safe name."""
+    return hashlib.sha256(session_id.encode("utf-8")).hexdigest()[:16]
 
 
 _ROW_COLUMNS = (
@@ -130,6 +144,9 @@ class ChatStorage:
             db_path = str(usage_dir / "chat.db")
 
         self._db_path = db_path
+        # Generative UI outputs' images belong to the chat history: they live
+        # beside it and go with the messages that show them.
+        self._ui_images_dir = Path(db_path).parent / "generative_ui"
         self._init_db()
         logger.info(f"[ChatStorage] Initialized at {self._db_path}")
 
@@ -268,7 +285,45 @@ class ChatStorage:
                     (json.dumps(closed_artifact(json.loads(raw))), row_id),
                 )
             conn.commit()
+        self._remove_ui_images(_ui_session_key(session_id), artifact_id)
         return len(rows)
+
+    def store_ui_images(
+        self,
+        session_id: str,
+        artifact_id: str,
+        images: Dict[str, Tuple[bytes, str]],
+    ) -> Dict[str, str]:
+        """Keep an output's images (``read_images``) for its revisions.
+        Returns name -> path, as /api/generative-ui serves it."""
+        key = _ui_session_key(session_id)
+        folder = self._ui_images_dir / key / artifact_id
+        stored = {}
+        for name, (data, kind) in images.items():
+            file = f"{hashlib.sha256(data).hexdigest()[:16]}.{kind}"
+            target = folder / file
+            if not target.exists():
+                folder.mkdir(parents=True, exist_ok=True)
+                target.write_bytes(data)
+            stored[name] = f"{key}/{artifact_id}/{file}"
+        return stored
+
+    def ui_image_file(self, path: str) -> Optional[Path]:
+        """The stored image at a path ``store_ui_images`` returned, if any."""
+        if not _UI_IMAGE_PATH.fullmatch(path):
+            return None
+        file = self._ui_images_dir / path
+        return file if file.is_file() else None
+
+    def _remove_ui_images(self, *parts: str) -> None:
+        """Delete the images of one output, one session, or (no parts) all."""
+        folder = self._ui_images_dir.joinpath(*parts)
+        if not folder.exists():
+            return
+        try:
+            shutil.rmtree(folder)
+        except OSError as exc:
+            logger.warning(f"[ChatStorage] Could not delete {folder}: {exc}")
 
     def get_latest_ui_artifact(
         self, session_id: str, artifact_id: str
@@ -390,7 +445,11 @@ class ChatStorage:
                 count = cursor.fetchone()[0]
                 cursor.execute("DELETE FROM chat_messages")
             conn.commit()
-            return count
+        if session_id:
+            self._remove_ui_images(_ui_session_key(session_id))
+        else:
+            self._remove_ui_images()
+        return count
 
     def get_pending_questions(self, session_id: str) -> List[Tuple[str, str]]:
         """

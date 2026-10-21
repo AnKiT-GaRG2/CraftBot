@@ -1,4 +1,4 @@
-import { useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react'
+import { useEffect, useLayoutEffect, useRef, useState } from 'react'
 import { createPortal } from 'react-dom'
 import { useTranslation } from 'react-i18next'
 import { Check, MoreHorizontal, RotateCcw, RefreshCw, Pause, Play, Loader2, AlertCircle } from 'lucide-react'
@@ -6,6 +6,7 @@ import type { GenerativeUIArtifact } from '../../types'
 import { usePersistedState } from '../../hooks'
 import { UI_STATE } from '../../store/uiState'
 import { BRIDGE_CHANNEL, buildDocument, readHostTheme, validState } from './runtime'
+import { loadAssets } from './assets'
 import styles from './GenerativeUI.module.css'
 
 /** One revision of an output, in the options menu. */
@@ -52,16 +53,30 @@ export function GenerativeUI({ artifact, sessionId, controlsTarget, versions, on
     window.addEventListener('blur', dismissFromPreview)
     return () => { document.removeEventListener('pointerdown', dismiss); window.removeEventListener('blur', dismissFromPreview) }
   }, [])
-  // Saved state intentionally does not rebuild the document on every interaction.
-  const runtime = useMemo(() => {
-    const token = crypto.randomUUID().replace(/-/g, '')
-    return { token, html: buildDocument(artifact, stateRef.current, token, window.location.origin) }
+  // The document, built once its libraries and images are in. Saved state
+  // intentionally does not rebuild it on every interaction.
+  const [runtime, setRuntime] = useState<{ token: string; html: string } | null>(null)
+  useLayoutEffect(() => {
+    let current = true
+    setRuntime(null)
+    setStatus('loading')
+    setError('')
+    loadAssets(artifact).then(assets => {
+      if (!current) return
+      const token = crypto.randomUUID().replace(/-/g, '')
+      setRuntime({ token, html: buildDocument(artifact, stateRef.current, token, window.location.origin, assets) })
+    }, (cause: unknown) => {
+      if (!current) return
+      setError(cause instanceof Error ? cause.message : String(cause))
+      setStatus('error')
+    })
+    return () => { current = false }
   }, [artifact, attempt, sessionId])
 
   // Register before the frame's first queued messages can arrive. Translation
   // changes must not restart readiness tracking for an already loaded frame.
   useLayoutEffect(() => {
-    if (paused) return
+    if (paused || !runtime) return
     setStatus('loading')
     setError('')
     const timer = window.setTimeout(() => {
@@ -80,10 +95,6 @@ export function GenerativeUI({ artifact, sessionId, controlsTarget, versions, on
           break
         case 'state':
           if (validState(data.state)) saveState(data.state)
-          break
-        case 'error':
-          window.clearTimeout(timer)
-          if (typeof data.message === 'string') { setError(data.message.slice(0, 1000)); setStatus('error') }
           break
       }
     }
@@ -113,10 +124,10 @@ export function GenerativeUI({ artifact, sessionId, controlsTarget, versions, on
           <AlertCircle size={18} /><div><strong>{t('generativeUI.error')}</strong><details><summary>{t('generativeUI.errorDetails')}</summary><p>{error}</p></details></div>
           <button type="button" onClick={() => restart()}>{t('generativeUI.tryAgain')}</button>
         </div>}
-        <iframe key={runtime.token} ref={frame} title={artifact.title} srcDoc={runtime.html} sandbox="allow-scripts allow-forms"
+        {runtime && <iframe key={runtime.token} ref={frame} title={artifact.title} srcDoc={runtime.html} sandbox="allow-scripts allow-forms"
           onLoad={() => frame.current?.contentWindow?.postMessage({ channel: BRIDGE_CHANNEL, token: runtime.token, type: 'initialize', theme: readHostTheme() }, '*')}
           referrerPolicy="no-referrer" allow="camera 'none'; microphone 'none'; geolocation 'none'; clipboard-read 'none'; clipboard-write 'none'"
-          className={`${styles.frame} ${status === 'ready' ? styles.frameReady : ''}`} />
+          className={`${styles.frame} ${status === 'ready' ? styles.frameReady : ''}`} />}
       </>}
     </div></div>
   )

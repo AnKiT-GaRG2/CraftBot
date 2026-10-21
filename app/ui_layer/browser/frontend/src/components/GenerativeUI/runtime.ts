@@ -1,5 +1,6 @@
 import type { GenerativeUIArtifact } from '../../types'
-import { parse, parseFragment, serializeOuter, type DefaultTreeAdapterTypes } from 'parse5'
+import { defaultTreeAdapter, html as HTML, parse, parseFragment, serializeOuter, type DefaultTreeAdapterTypes } from 'parse5'
+import type { OutputAssets } from './assets'
 
 export const MAX_STATE_BYTES = 65_536
 export const BRIDGE_CHANNEL = 'craftbot-generative-ui'
@@ -32,7 +33,7 @@ function scriptJSON(value: unknown): string {
 }
 
 /** Revalidate persisted/untrusted metadata before inserting it into a CSP. */
-function connectOrigins(value: unknown): string[] {
+function validOrigins(value: unknown): string[] {
   if (!Array.isArray(value) || value.length > 8) return []
   const blocked = new Set(['localhost', 'local', 'internal', 'lan', 'home', 'corp', 'arpa', 'onion', 'test', 'invalid'])
   const origins = new Set<string>()
@@ -49,7 +50,7 @@ function connectOrigins(value: unknown): string[] {
 }
 
 /** Build a fresh opaque-origin document. Never insert generated code into the host DOM. */
-export function buildDocument(artifact: GenerativeUIArtifact, state: Record<string, unknown>, token: string, parentOrigin: string): string {
+export function buildDocument(artifact: GenerativeUIArtifact, state: Record<string, unknown>, token: string, parentOrigin: string, assets: OutputAssets): string {
   // A pure parser preserves document/body attributes without starting any host
   // image/frame requests (DOMParser's inert HTML documents can still fetch them).
   const parsed = parse(artifact.html)
@@ -69,10 +70,13 @@ export function buildDocument(artifact: GenerativeUIArtifact, state: Record<stri
       if ('content' in node) pending.push((node as DefaultTreeAdapterTypes.Template).content)
     }
   }
-  const connect = connectOrigins(artifact.connect_origins).join(' ') || "'none'"
+  const connect = validOrigins(artifact.connect_origins).join(' ') || "'none'"
+  // Map tiles come through CraftBot (app/map_tiles.py), never from the tile server itself.
+  const tiles = `${parentOrigin}/api/generative-ui/tiles/`
+  const imageSources = ['data:', 'blob:', ...(assets.map ? [tiles] : []), ...validOrigins(artifact.image_origins)].join(' ')
   const policy = [
     "default-src 'none'", "script-src 'unsafe-inline'", "script-src-attr 'none'",
-    "style-src 'unsafe-inline'", "img-src data: blob:", `connect-src ${connect}`,
+    "style-src 'unsafe-inline'", `img-src ${imageSources}`, `connect-src ${connect}`,
     "form-action 'none'", "base-uri 'none'", "object-src 'none'", "frame-src 'none'", "worker-src 'none'",
   ].join('; ')
   const csp = document.createElement('meta')
@@ -87,18 +91,25 @@ export function buildDocument(artifact: GenerativeUIArtifact, state: Record<stri
     const send = (type, data = {}) => parent.postMessage({ channel: '${BRIDGE_CHANNEL}', token, type, ...data }, origin);
     let state = ${scriptJSON(state)};
     let theme;
+    // A changed theme is announced, so colours drawn by script can follow it.
     const applyTheme = next => {
-      if (!next || typeof next !== 'object') return;
+      if (!next || typeof next !== 'object' || JSON.stringify(next) === JSON.stringify(theme)) return;
+      const changed = theme !== undefined;
       theme = Object.freeze({ ...next });
       for (const key of ['--cb-bg','--cb-surface','--cb-text','--cb-muted','--cb-border','--cb-accent','--cb-font']) {
         if (typeof next[key] === 'string') document.documentElement.style.setProperty(key, next[key]);
       }
       document.documentElement.style.colorScheme = next.mode === 'light' ? 'light' : 'dark';
+      if (changed) dispatchEvent(new Event('craftbot-theme'));
     };
     applyTheme(${scriptJSON(readHostTheme())});
+    const images = Object.freeze(${scriptJSON(assets.images)});
+    const map = ${scriptJSON(assets.map && { ...assets.map, tiles: tiles + '{z}/{x}/{y}' })};
     Object.defineProperty(window, 'craftbot', { value: Object.freeze({
       get state() { return state; },
       get theme() { return theme; },
+      images,
+      map: map && Object.freeze(map),
       saveState(value) {
         if (!value || typeof value !== 'object' || Array.isArray(value)) throw new Error('State must be a JSON object');
         const json = JSON.stringify(value);
@@ -106,9 +117,6 @@ export function buildDocument(artifact: GenerativeUIArtifact, state: Record<stri
         state = JSON.parse(json); send('state', { state });
       }
     }), writable: false, configurable: false });
-    addEventListener('error', e => send('error', { message: String(e.message || 'Script error').slice(0, 1000) }));
-    addEventListener('unhandledrejection', e => send('error', { message: String(e.reason?.message || e.reason || 'Promise rejected').slice(0, 1000) }));
-    addEventListener('securitypolicyviolation', e => send('error', { message: 'Blocked resource: ' + e.violatedDirective }));
     // Links/forms are UI controls, never a way to leave the runtime.
     addEventListener('click', e => { if (e.target?.closest?.('a, area')) e.preventDefault(); }, true);
     addEventListener('submit', e => e.preventDefault(), true);
@@ -129,6 +137,17 @@ export function buildDocument(artifact: GenerativeUIArtifact, state: Record<stri
   // A reduced-motion preference overrides document CSS, including smooth scroll.
   const motionStyles = '<style>@media(prefers-reduced-motion:no-preference){button,input,select,textarea{transition:background-color 160ms ease,border-color 160ms ease,color 160ms ease,box-shadow 160ms ease}}@media(prefers-reduced-motion:reduce){*,*::before,*::after{animation-duration:.01ms!important;animation-iteration-count:1!important;transition-duration:0s!important;scroll-behavior:auto!important}}</style>'
   const prefix = parseFragment('<meta charset="utf-8">' + csp.outerHTML + viewport.outerHTML + baseStyles + motionStyles + bootstrap.outerHTML)
+  // Libraries run after the bootstrap (they read its theme tokens) and before
+  // the output's own code. Their text goes in as nodes, never parsed as markup
+  // (generativeUILibraries.ts guarantees it cannot end its element).
+  for (const library of assets.libraries) {
+    for (const [tag, text] of [['style', library.style], ['script', library.script]] as const) {
+      if (!text) continue
+      const element = defaultTreeAdapter.createElement(tag, HTML.NS.HTML, [])
+      defaultTreeAdapter.insertText(element, text)
+      prefix.childNodes.push(element)
+    }
+  }
   for (const node of prefix.childNodes) node.parentNode = head
   head.childNodes.unshift(...prefix.childNodes)
   return '<!doctype html>\n' + serializeOuter(html)

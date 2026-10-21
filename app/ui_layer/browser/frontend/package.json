@@ -14,9 +14,13 @@
     "@reduxjs/toolkit": "^2.12.0",
     "@ridemountainpig/svgl-react": "^1.0.17",
     "@tanstack/react-virtual": "^3.13.23",
+    "chart.js": "^4.5.1",
     "driver.js": "^1.8.0",
     "i18next": "^23.16.8",
+    "leaflet": "^1.9.4",
+    "lucide": "^1.61.0",
     "lucide-react": "^0.344.0",
+    "motion": "^14.5.0",
     "parse5": "^8.0.1",
     "prism-react-renderer": "^2.4.1",
     "react": "^18.2.0",
@@ -27,7 +31,8 @@
     "react-redux": "^9.3.0",
     "react-router-dom": "^6.22.0",
     "remark-breaks": "^4.0.0",
-    "remark-gfm": "^4.0.0"
+    "remark-gfm": "^4.0.0",
+    "three": "^0.186.1"
   },
   "devDependencies": {
     "@playwright/test": "^1.64.0",

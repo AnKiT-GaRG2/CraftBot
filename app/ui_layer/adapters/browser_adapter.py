@@ -164,6 +164,14 @@ if TYPE_CHECKING:
 # and other tabs can ignore it (plan §A4.5).
 _REQUEST_ID: ContextVar[Optional[str]] = ContextVar("ui_request_id", default=None)
 
+# The image types a Generative UI output can show (app.generative_ui.image_kind).
+_UI_IMAGE_TYPES = {
+    ".png": "image/png",
+    ".jpg": "image/jpeg",
+    ".gif": "image/gif",
+    ".webp": "image/webp",
+}
+
 
 def _with_request_id(message: Dict[str, Any]) -> Dict[str, Any]:
     """``message`` with the current request's id added to its data, if any."""
@@ -1152,6 +1160,16 @@ A quick Q&A will now begin to understand your objectives to serve you better:"""
         self._app.router.add_get("/api/theme.css", self._theme_css_handler)
         self._app.router.add_get(
             "/api/workspace/{path:.*}", self._workspace_file_handler
+        )
+        self._app.router.add_get(
+            "/api/generative-ui/tiles", self._generative_ui_map_handler
+        )
+        self._app.router.add_get(
+            r"/api/generative-ui/tiles/{z:\d+}/{x:\d+}/{y:\d+}",
+            self._generative_ui_tile_handler,
+        )
+        self._app.router.add_get(
+            "/api/generative-ui/{path:.*}", self._generative_ui_image_handler
         )
         self._app.router.add_get(
             "/api/agent-profile-picture", self._agent_profile_picture_handler
@@ -10413,6 +10431,75 @@ A quick Q&A will now begin to understand your objectives to serve you better:"""
             raise web.HTTPNotFound()
         except Exception as e:
             raise web.HTTPInternalServerError(reason=str(e))
+
+    async def _generative_ui_map_handler(
+        self, request: "web.Request"
+    ) -> "web.Response":
+        """What a Generative UI output's map shows beside its tiles."""
+        from aiohttp import web
+
+        from app.config import get_generative_ui_settings
+
+        settings = get_generative_ui_settings()
+        return web.json_response(
+            {
+                "attribution": settings["map_attribution"],
+                "maxZoom": settings["map_max_zoom"],
+            }
+        )
+
+    async def _generative_ui_tile_handler(
+        self, request: "web.Request"
+    ) -> "web.Response":
+        """A map tile for a Generative UI output, fetched by CraftBot
+        (app.map_tiles): the sandboxed page cannot identify itself to the
+        tile server."""
+        from aiohttp import web
+
+        from app import map_tiles
+        from app.config import get_generative_ui_settings
+
+        z, x, y = (int(request.match_info[key]) for key in ("z", "x", "y"))
+        if not map_tiles.valid_tile(
+            z, x, y, get_generative_ui_settings()["map_max_zoom"]
+        ):
+            raise web.HTTPNotFound()
+        try:
+            data, content_type = await map_tiles.get_tile(z, x, y)
+        except map_tiles.TileUnavailable as exc:
+            logger.warning(f"[GENERATIVE_UI] Map tile {z}/{x}/{y} unavailable: {exc}")
+            raise web.HTTPBadGateway()
+        return web.Response(
+            body=data,
+            content_type=content_type,
+            headers={
+                "Cache-Control": "private, max-age=86400",
+                "X-Content-Type-Options": "nosniff",
+            },
+        )
+
+    async def _generative_ui_image_handler(
+        self, request: "web.Request"
+    ) -> "web.Response":
+        """Serve a Generative UI output's image (ChatStorage.store_ui_images).
+        The output panel reads it and hands it to the sandbox; the file name
+        is its content hash, so it never changes."""
+        from aiohttp import web
+
+        from app.usage.chat_storage import get_chat_storage
+
+        path = request.match_info.get("path", "")
+        file = get_chat_storage().ui_image_file(path)
+        if file is None:
+            raise web.HTTPNotFound()
+        return web.FileResponse(
+            file,
+            headers={
+                "Content-Type": _UI_IMAGE_TYPES[file.suffix],
+                "Cache-Control": "private, max-age=31536000, immutable",
+                "X-Content-Type-Options": "nosniff",
+            },
+        )
 
     def _get_index_html(self) -> str:
         """Get the index HTML for the browser interface."""

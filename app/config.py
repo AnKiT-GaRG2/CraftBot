@@ -155,6 +155,14 @@ def _get_default_settings() -> Dict[str, Any]:
             "locale": "",  # "" = the OS locale
             "channel": "chromium",  # "" = Playwright's bundled headless shell
         },
+        # Read through get_generative_ui_settings(). Generative UI outputs get
+        # their map tiles through CraftBot (app.map_tiles), which fetches them
+        # from this server: the sandboxed page cannot identify itself.
+        "generative_ui": {
+            "map_tiles_url": "https://tile.openstreetmap.org/{z}/{x}/{y}.png",
+            "map_attribution": "© OpenStreetMap contributors",
+            "map_max_zoom": 19,
+        },
     }
 
 
@@ -552,6 +560,39 @@ def get_mini_browser_settings() -> Dict[str, Any]:
         ok, value = _clean_mini_browser_value(key, stored.get(key, default))
         result[key] = value if ok else default
     return result
+
+
+def get_generative_ui_settings() -> Dict[str, Any]:
+    """The Generative UI settings: shipped defaults overlaid with settings.json.
+
+    A value of the wrong shape (a tile URL that is not HTTPS or lacks any of
+    {z}, {x}, {y}; a zoom outside 0-22) takes its default. Never raises.
+    """
+    defaults = _get_default_settings()["generative_ui"]
+    try:
+        stored = get_settings().get("generative_ui")
+    except Exception:
+        stored = None
+    if not isinstance(stored, dict):
+        stored = {}
+    url = stored.get("map_tiles_url")
+    attribution = stored.get("map_attribution")
+    max_zoom = stored.get("map_max_zoom")
+    return {
+        "map_tiles_url": url
+        if isinstance(url, str)
+        and url.startswith("https://")
+        and all(part in url for part in ("{z}", "{x}", "{y}"))
+        else defaults["map_tiles_url"],
+        "map_attribution": attribution
+        if isinstance(attribution, str)
+        else defaults["map_attribution"],
+        "map_max_zoom": max_zoom
+        if isinstance(max_zoom, int)
+        and not isinstance(max_zoom, bool)
+        and 0 <= max_zoom <= 22
+        else defaults["map_max_zoom"],
+    }
 
 
 def set_mini_browser_setting(key: str, value: Any) -> None:

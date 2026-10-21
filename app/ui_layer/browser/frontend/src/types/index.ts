@@ -48,6 +48,11 @@ export interface GenerativeUIArtifact {
   html: string
   revision: number
   connect_origins?: string[]
+  image_origins?: string[]
+  /** Preloaded library names (see components/GenerativeUI/assets.ts). */
+  libraries?: string[]
+  /** By name: stored image paths, read as window.craftbot.images. */
+  images?: Record<string, string>
   closed?: false
 }
 

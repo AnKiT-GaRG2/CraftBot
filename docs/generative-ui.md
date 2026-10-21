@@ -14,8 +14,10 @@ reading alone meets the need, and respect an explicitly requested output format.
 Topic categories do not trigger UI generation; the examples in this document are
 test cases, not a list of supported or preferred use cases.
 
-Call `render_ui` with `title`, `html`, and optionally `connect_origins` listing
-the exact public HTTPS API origins needed by that output.
+Call `render_ui` with `title`, `html`, and optionally `libraries`,
+`connect_origins` (exact public HTTPS API origins the output fetches),
+`image_origins` (exact public HTTPS origins for web images) and
+`images` (named local image files, for example from `generate_image`).
 The action returns `artifact_id` and `revision`. To revise an existing answer,
 send its ID with the complete replacement document in the same session.
 Older revisions remain in history and can be selected in the output workspace. Revision lookup uses the session's event
@@ -25,7 +27,65 @@ HTML is capped at 512,000 UTF-8 bytes. Titles are capped at 120 characters.
 Use inline CSS and JavaScript, `addEventListener`, semantic controls, responsive
 layouts, and loading/error states. External scripts, module dependencies,
 inline event attributes, browser permissions, and API secrets are unsupported.
-For forms, handle `submit` and call `preventDefault()`; no form is sent externally.
+The runtime blocks form submission and link navigation itself.
+
+The action description is part of every session's `<actions>` block, so every
+turn pays for it. Keep it short: a rule the runtime can enforce (submit and
+link blocking, reduced motion, the content policy) belongs in the runtime, not
+in the description. The October 2026 visual revision cut it from 662 to 521
+tokens (o200k) while adding `libraries`, `image_origins`, `images`, the
+colour rule and the map helper.
+
+## Visual libraries and images
+
+The guidance asks for a visual centerpiece (a map, chart, diagram,
+illustration, 3D scene or image) rather than plain forms, lists and tables.
+An output lists the libraries it needs in `libraries`; each is preloaded as a
+global before the output's own scripts run:
+
+| Name | Global |
+| --- | --- |
+| `leaflet` | `L` (Leaflet 1.9, marker and control images inline); base map `L.tileLayer.craftbot()` |
+| `three` | `THREE`, with `THREE.OrbitControls` |
+| `chart` | `Chart` (Chart.js, all chart types registered) |
+| `motion` | `Motion` (`animate`, `stagger`, `inView`, ...) |
+| `lucide` | `lucide`; `lucide.createIcons()` fills `<i data-lucide="name">` |
+
+Nothing is fetched from the network. `frontend/generativeUILibraries.ts` (a
+Vite plugin) bundles each library with esbuild into one classic script, and
+the panel loads it on demand and inlines it into the output's document. The
+build fails if a bundle contains markup that could end its element. Chart.js
+starts in the host's font and `--cb-*` colours and follows theme changes,
+including the axis colours each chart copies into its own config when built.
+Leaflet's controls, popups and attribution use the `--cb-*` tokens. With a reduced-motion
+preference, Motion skips animations and Chart.js disables them. The names are
+listed in `app/generative_ui.py` (`LIBRARIES`) and
+`components/GenerativeUI/assets.ts`; keep both lists in step.
+
+Map tiles come through CraftBot, not from the tile server. The sandboxed page
+has an opaque origin, so its own requests carry no Referer and cannot identify
+the app; OpenStreetMap's usage policy requires both, and its servers answered
+such requests with a 403 "Access blocked" tile in a live run.
+`L.tileLayer.craftbot()` loads tiles from `/api/generative-ui/tiles/{z}/{x}/{y}`
+(the only host path the page's image policy allows). `app/map_tiles.py` fetches
+each tile under CraftBot's own User-Agent, shares concurrent requests for one
+tile, makes at most 4 upstream requests at once, and caches tiles in
+`app/data/.usage/map_tiles/` for as long as the server's caching headers allow
+(7 days when it sends none). The server, attribution and maximum zoom are the
+`generative_ui` settings (`map_tiles_url`, `map_attribution`, `map_max_zoom`;
+default OpenStreetMap). `/api/generative-ui/tiles` gives the page the
+attribution and zoom, as `window.craftbot.map`.
+
+Web images load from the origins in `image_origins`, which are validated like
+`connect_origins`.
+
+`images` maps names to local PNG, JPEG, GIF or WebP files (at most 8, 8 MB
+each, 16 MB in total, type checked by content). The chat store copies them
+beside `chat.db` (`generative_ui/<session key>/<artifact id>/<hash>.<ext>`)
+and serves them from `/api/generative-ui/`. The panel reads them, and the
+page receives them as data URLs in `window.craftbot.images.<name>`. They are
+deleted with their output (closing its tab) and with their chat (clear,
+delete or reset).
 
 The conversation contains a compact Open output reference. One selected document
 runs in a separate full-height output pane, independently of virtualized message
@@ -52,15 +112,19 @@ are also instructed to honor that preference and keep controls responsive.
 
 Generated content receives a small base stylesheet and the host's public design
 tokens: `--cb-bg`, `--cb-surface`, `--cb-text`, `--cb-muted`, `--cb-border`,
-`--cb-accent`, and `--cb-font`. Use these for neutral surfaces, typography and
-controls so light/dark mode stays consistent with CraftBot. Theme updates cross
-the validated bridge without reloading the document or resetting progress.
+`--cb-accent`, and `--cb-font`. Every colour must follow CraftBot's light/dark
+theme: the guidance allows only these tokens or CSS `light-dark(light, dark)`
+(the runtime sets the document's `color-scheme` to the host theme). Inside the
+sandbox `prefers-color-scheme` follows the operating system, not CraftBot, and
+setting `color-scheme` on the iframe does not change that, so pages must not
+use it. Theme updates cross the validated bridge without reloading the document
+or resetting progress; a changed theme fires a `craftbot-theme` event on
+`window`, so colours drawn by script (canvas, WebGL) can be redrawn.
 `window.craftbot.theme` exposes the same visual tokens, without other host state.
-The generation guidance favors deliberate typography, a strong focal point,
-task-specific compositions, and progressive disclosure instead of nested
-dashboards or collections of forms. Custom design experiments can still
-choose their own palettes. Existing artifacts with hardcoded colors need a
-revision to adopt the tokens; the runtime does not overwrite their authored CSS.
+The generation guidance favors a visual centerpiece, bold typography and
+deliberate colour within those tokens. Existing artifacts with hardcoded colors
+need a revision to adopt the tokens; the runtime does not overwrite their
+authored CSS.
 
 The runtime supplies a small synchronous API before generated scripts run:
 
@@ -113,11 +177,15 @@ Host markup parsing uses parse5's pure syntax tree, which does not start image o
 frame requests and preserves document/body attributes. Policy overrides, nested frames, external scripts, and inline
 event handlers are removed before preview insertion. A CSP precedes generated
 content: external scripts, frames, workers, fonts, media and other resource
-types are blocked; images can use only data/blob sources. Inline scripts and
+types are blocked; images can use only data/blob sources and the output's
+declared `image_origins`. Inline scripts and
 styles are supported, but JavaScript evaluation through eval/Function is not.
 Bridge messages must come from the exact live iframe window and carry its
 per-mount token; payload types and state sizes are checked. No host credentials
-or arbitrary tool calls are exposed. Runtime failures appear above the preview.
+or arbitrary tool calls are exposed. A page's own script errors and blocked
+requests are not reported to the panel (they stay in the frame's console); the
+panel shows an error only when the preview cannot load (its libraries or images
+are unavailable, or it never signals ready).
 
 **This is an initial browser runtime, not a complete hostile-code sandbox.**
 An iframe can navigate its own browsing context through JavaScript; current
