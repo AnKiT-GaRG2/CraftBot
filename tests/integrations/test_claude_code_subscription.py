@@ -438,7 +438,10 @@ def test_settings_allow_connected_claude_without_api_key(monkeypatch):
         if p["id"] == "anthropic"
     )
     assert info["supports_subscription_oauth"]
-    assert "Claude Code" in info["subscription_label"]
+    assert info["subscription_label"] == "Sign in with Claude"
+    from app.onboarding.interfaces.steps import ApiKeyStep
+
+    assert ApiKeyStep("anthropic").subscription_label() == "Sign in with Claude"
 
 
 def test_connection_test_uses_selected_cli_model(monkeypatch):

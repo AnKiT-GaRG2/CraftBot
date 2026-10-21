@@ -1035,9 +1035,22 @@ class LLMInterface:
         count against it), so the window check reserves that cap; otherwise
         the provider would reject the request for size instead.
         """
-        if reasoning is None:
-            return self.max_tokens
-        return reasoning.output_cap(self.max_tokens)
+        output_cap = (
+            self.max_tokens
+            if reasoning is None
+            else reasoning.output_cap(self.max_tokens)
+        )
+        # The Chat Completions transport applies the provider's ceiling
+        # after reasoning raises the cap. Reserve the value actually sent,
+        # or a small-window provider such as Qwen can reject every prompt.
+        profile = _get_registry().get(self.provider)
+        if (
+            profile is not None
+            and profile.wire == "chat_completions"
+            and profile.max_output_tokens
+        ):
+            output_cap = min(output_cap, profile.max_output_tokens)
+        return output_cap
 
     def _generate_response_sync(
         self,

@@ -11,20 +11,27 @@
   live subscription checks. Live interface reinitialization stays on the event
   loop. Synchronous onboarding validates the saved connection flag and skips
   unused live status in settings-update results.
+- The shared subscription button label is **Sign in with Claude** in both
+  onboarding and Model settings.
+- Removed the stale OmniRoute test case while retaining the request-shaping
+  checks on LM Studio. This exposed a context-budget bug: Chat Completions
+  reserved the uncapped output limit even when the request used a lower
+  provider ceiling. The context check now reserves the value actually sent,
+  with boundary regressions for Qwen, Groq, NVIDIA and Cerebras.
 - Focused subscription/reinitialization tests: **56 passed**, including 19 new
   regression cases for reasoning choices and event-loop isolation.
-- Combined subscription, reinitialization, factory, reasoning, golden-payload
-  and reliability tests: **899 passed, 1 pre-existing failure**. The failure is
-  `test_provider_request_quirks` (`omniroute` is absent from the registry), which
-  was independently reproduced on the pre-PR merge base during review.
+- Combined subscription, reinitialization, factory, reasoning, golden-payload,
+  reliability, context-budget and Supabase conformance tests: **1000 passed**.
+  `test_provider_request_quirks` now passes.
+- Additional session-resume and context-readout regressions: **36 passed**
+  (**1036 passed** across the validation runs).
 - Real installed Claude Code 2.1.50 against a local stub server: Off omits
   thinking from the Messages request; High sends adaptive thinking with effort
   high. Both return the stub response through `ClaudeCodeClient`. No real
   account credentials or paid model requests were used for this check.
-- Changed Python files pass lint, format, compilation and whitespace checks.
-  Repository-wide lint reports two existing errors in untouched files:
-  `app/agent_app/test_data_safety.py:1745` (E402) and
-  `craftos_integrations/providers/supabase/client.py:209` (E702).
+- Repository-wide lint passes after removing the redundant late SQLite import
+  and splitting the Supabase SQL parser's statements onto separate lines.
+  Changed Python code passes formatting, compilation and whitespace checks.
 
 Authenticated private-profile login/logout and live inference acceptance remain
 pending as described below.
