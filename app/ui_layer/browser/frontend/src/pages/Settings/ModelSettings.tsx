@@ -997,6 +997,24 @@ export function ModelSettings() {
                     </Button>
                   </div>
                 )}
+                {!isSubConnected && subStatus?.configured && (
+                  <>
+                    <p className={styles.hint}>{t('settings:model.subscription.recoveryHint')}</p>
+                    <Button
+                      variant="secondary"
+                      disabled={isSubPending}
+                      onClick={() => {
+                        dispatch(setSubscriptionPending({ provider, pending: true }))
+                        send('model_subscription_disconnect', { provider })
+                      }}
+                    >
+                      {t('common:actions.disconnect')}
+                    </Button>
+                  </>
+                )}
+                {subStatus?.error && (
+                  <p role="alert" className={styles.hint}>{subStatus.error}</p>
+                )}
               </div>
             )
 

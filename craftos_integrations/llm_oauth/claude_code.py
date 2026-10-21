@@ -172,7 +172,9 @@ def has_credential() -> bool:
 def status() -> Dict[str, Any]:
     if not has_credential():
         return {"supported": True, "connected": False}
-    return {"supported": True, **auth_status()}
+    # Authentication can fail while the explicit opt-in still owns routing.
+    # Keep Disconnect available until logout is verified and the flag is removed.
+    return {"supported": True, "configured": True, **auth_status()}
 
 
 def _save_connection(current: Dict[str, Any]) -> Tuple[bool, str]:

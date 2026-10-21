@@ -11,6 +11,16 @@
   live subscription checks. Live interface reinitialization stays on the event
   loop. Synchronous onboarding validates the saved connection flag and skips
   unused live status in settings-update results.
+- Invalid Claude authentication now reports the saved connection separately
+  from live login status. Onboarding and Model settings keep Disconnect
+  available, explain how to switch to an API key, and display the CLI error.
+  Failed logout verification retains recovery controls; verified logout clears
+  the connection and permits explicit API-key use without silent fallback.
+- Settings mutations share a reentrant lock across model, provider/auth-mode,
+  language, memory, proactive and Mini Browser settings. Reads and atomic file
+  replacement use the same lock; the complete load/change/save transaction is
+  serialized, while live CLI status checks stay outside it. Failed replacement
+  leaves the previous file intact.
 - The shared subscription button label is **Sign in with Claude** in both
   onboarding and Model settings.
 - Removed the stale OmniRoute test case while retaining the request-shaping
@@ -18,13 +28,19 @@
   reserved the uncapped output limit even when the request used a lower
   provider ceiling. The context check now reserves the value actually sent,
   with boundary regressions for Qwen, Groq, NVIDIA and Cerebras.
-- Focused subscription/reinitialization tests: **56 passed**, including 19 new
-  regression cases for reasoning choices and event-loop isolation.
+- Focused subscription/reinitialization/settings-transaction tests: **67 passed**,
+  including 30 new regression cases for reasoning, event-loop isolation,
+  authentication recovery and concurrent settings mutations.
 - Combined subscription, reinitialization, factory, reasoning, golden-payload,
-  reliability, context-budget and Supabase conformance tests: **1000 passed**.
+  reliability, session-resume, context-readout, context-budget, settings-transaction
+  and Supabase conformance tests: **1047 passed**.
   `test_provider_request_quirks` now passes.
-- Additional session-resume and context-readout regressions: **36 passed**
-  (**1036 passed** across the validation runs).
+- Additional Mini Browser settings regressions: **65 passed**
+  (**1112 Python tests passed** across the validation runs).
+- Browser recovery regressions: **4 passed**, exercising the real onboarding
+  and Model settings components with an isolated transport. Both screens can
+  reconnect, retry failed logout and remove recovery controls after verified
+  logout. Frontend production build and TypeScript checks pass.
 - Real installed Claude Code 2.1.50 against a local stub server: Off omits
   thinking from the Messages request; High sends adaptive thinking with effort
   high. Both return the stub response through `ClaudeCodeClient`. No real

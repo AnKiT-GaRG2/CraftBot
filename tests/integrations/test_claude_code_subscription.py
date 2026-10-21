@@ -494,7 +494,79 @@ def test_status_detects_cli_logout_without_exporting_tokens(monkeypatch):
         lambda: {"connected": False, "error": "Sign in again"},
     )
     assert not tokens.status("anthropic")["connected"]
+    assert tokens.status("anthropic")["configured"]
     assert tokens.get_bearer("anthropic") is None
+
+
+def test_invalid_login_can_disconnect_before_switching_to_an_api_key(monkeypatch):
+    from app.ui_layer.settings import provider_settings
+    from agent_core.core.models import connection_tester
+
+    connected(monkeypatch)
+    monkeypatch.setattr(
+        claude_code,
+        "auth_status",
+        lambda: {"connected": False, "error": "Sign in again"},
+    )
+    monkeypatch.setattr(provider_settings, "_persist_auth_mode", lambda *args: None)
+    assert tokens.status("anthropic") == {
+        "supported": True,
+        "configured": True,
+        "connected": False,
+        "error": "Sign in again",
+    }
+    # A failed login never silently selects the paid API key.
+    context = ModelFactory.create(
+        provider="anthropic", interface=InterfaceType.LLM, api_key="paid-key"
+    )
+    assert isinstance(context["anthropic_client"], ClaudeCodeClient)
+    # Disconnect still verifies the already-logged-out CLI before clearing opt-in.
+    assert provider_settings.disconnect_subscription("anthropic")[0]
+    assert tokens.status("anthropic") == {"supported": True, "connected": False}
+    api_client = object()
+    monkeypatch.setattr(
+        "agent_core.core.models.factory._create_anthropic_client",
+        lambda **kwargs: api_client,
+    )
+    context = ModelFactory.create(
+        provider="anthropic", interface=InterfaceType.LLM, api_key="paid-key"
+    )
+    assert context["anthropic_client"] is api_client
+    tested = []
+    monkeypatch.setattr(
+        connection_tester,
+        "_test_anthropic",
+        lambda key, *args: tested.append(key) or {"success": True},
+    )
+    assert connection_tester.test_provider_connection("anthropic", api_key="paid-key")[
+        "success"
+    ]
+    assert tested == ["paid-key"]
+
+
+def test_failed_logout_verification_keeps_disconnect_available(monkeypatch):
+    read_status = claude_code.auth_status
+    connected(monkeypatch)
+    monkeypatch.setattr(claude_code, "auth_status", read_status)
+    monkeypatch.setattr(
+        claude_code,
+        "run_cli",
+        lambda *args, **kwargs: SimpleNamespace(returncode=0, stdout="invalid status"),
+    )
+    assert not tokens.disconnect("anthropic")[0]
+    status = tokens.status("anthropic")
+    assert not status["connected"]
+    assert status["configured"] and status["error"]
+    # A subsequent successful retry clears both routing and recovery state.
+    monkeypatch.setattr(
+        claude_code,
+        "run_cli",
+        lambda *args, **kwargs: SimpleNamespace(
+            returncode=0, stdout='{"loggedIn": false}'
+        ),
+    )
+    assert tokens.disconnect("anthropic")[0]
+    assert tokens.status("anthropic") == {"supported": True, "connected": False}
 
 
 def test_old_shared_login_marker_requires_new_profile_sign_in(tmp_path):
