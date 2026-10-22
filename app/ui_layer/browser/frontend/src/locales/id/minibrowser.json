@@ -295,6 +295,15 @@
     "apiKey": "Kunci API",
     "note": "Catatan",
     "keepValue": "Kosongkan untuk mempertahankan nilai tersimpan",
+    "placeholders": {
+      "apiKeyName": "mis. Kunci API OpenAI",
+      "noteName": "mis. Kode pemulihan",
+      "apiWebsite": "api.example.com",
+      "username": "anda@example.com",
+      "password": "Masukkan kata sandi",
+      "apiKey": "Tempel kunci API",
+      "note": "Tulis apa pun yang ingin Anda simpan secara pribadi"
+    },
     "loading": "Memuat kredensial…",
     "empty": "Brankas Anda dimulai di sini",
     "emptyHint": "Tambahkan login, kunci API, atau catatan aman.",

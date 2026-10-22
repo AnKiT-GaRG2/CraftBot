@@ -296,6 +296,15 @@
     "apiKey": "API key",
     "note": "Note",
     "keepValue": "Leave blank to keep the saved value",
+    "placeholders": {
+      "apiKeyName": "e.g. OpenAI API key",
+      "noteName": "e.g. Recovery codes",
+      "apiWebsite": "api.example.com",
+      "username": "you@example.com",
+      "password": "Enter the password",
+      "apiKey": "Paste the API key",
+      "note": "Write anything you want to keep private"
+    },
     "loading": "Loading credentials…",
     "empty": "Your vault starts here",
     "emptyHint": "Add a login, API key or secure note to keep it in one place.",

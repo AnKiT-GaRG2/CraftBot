@@ -295,6 +295,15 @@
     "apiKey": "API 金鑰",
     "note": "筆記",
     "keepValue": "留空以保留已儲存的值",
+    "placeholders": {
+      "apiKeyName": "例如：OpenAI API 金鑰",
+      "noteName": "例如：復原碼",
+      "apiWebsite": "api.example.com",
+      "username": "you@example.com",
+      "password": "輸入密碼",
+      "apiKey": "貼上 API 金鑰",
+      "note": "寫下你想私密保存的內容"
+    },
     "loading": "正在載入認證資料…",
     "empty": "從這裡開始使用保管庫",
     "emptyHint": "新增登入、API 金鑰或安全筆記。",

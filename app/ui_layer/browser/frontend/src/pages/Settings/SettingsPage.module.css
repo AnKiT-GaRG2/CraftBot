@@ -113,6 +113,12 @@
   color: var(--text-secondary);
 }
 
+/* For a section whose body opens with its own intro line, so that line sits
+   under the title like the subtitle above. */
+.sectionHeaderFlush {
+  margin-bottom: 0;
+}
+
 /* Form Elements */
 .settingsForm {
   display: flex;

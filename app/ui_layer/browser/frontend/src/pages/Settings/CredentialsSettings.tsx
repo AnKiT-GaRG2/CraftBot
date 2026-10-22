@@ -7,7 +7,7 @@ export function CredentialsSettings() {
 
   return (
     <section className={styles.settingsSection}>
-      <div className={styles.sectionHeader}>
+      <div className={`${styles.sectionHeader} ${styles.sectionHeaderFlush}`}>
         <h3>{t('nav.credentials')}</h3>
       </div>
       <PasswordsPanel />

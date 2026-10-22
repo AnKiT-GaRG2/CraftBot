@@ -295,6 +295,15 @@
     "apiKey": "API 密钥",
     "note": "笔记",
     "keepValue": "留空以保留已保存的值",
+    "placeholders": {
+      "apiKeyName": "例如：OpenAI API 密钥",
+      "noteName": "例如：恢复代码",
+      "apiWebsite": "api.example.com",
+      "username": "you@example.com",
+      "password": "输入密码",
+      "apiKey": "粘贴 API 密钥",
+      "note": "写下你想私密保存的内容"
+    },
     "loading": "正在加载凭据…",
     "empty": "从这里开始使用保险库",
     "emptyHint": "添加登录、API 密钥或安全笔记。",

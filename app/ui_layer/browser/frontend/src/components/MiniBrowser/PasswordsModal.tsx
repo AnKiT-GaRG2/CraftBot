@@ -16,7 +16,7 @@ import {
   ShieldCheck,
   Trash2,
 } from 'lucide-react'
-import { Button, ConfirmModal, IconButton, Modal, ModalBody, ModalFooter } from '../../components/ui'
+import { Badge, Button, ConfirmModal, IconButton, Modal, ModalBody, ModalFooter } from '../../components/ui'
 import { useToast } from '../../contexts/ToastContext'
 import { formatDate } from '../../i18n/format'
 import { useAppSelector } from '../../store/hooks'
@@ -43,7 +43,7 @@ const GROUPS: CredentialGroup[] = ['work', 'personal', 'other']
 const NOTE_MAX = 16384
 const kindOf = (entry: MiniBrowserVaultEntry): CredentialKind => entry.kind ?? 'login'
 const groupOf = (entry: MiniBrowserVaultEntry): CredentialGroup => entry.group ?? 'other'
-const kindIcon = (kind: CredentialKind) => kind === 'login' ? <Globe size={19} /> : kind === 'api_key' ? <Code2 size={19} /> : <FileText size={19} />
+const kindIcon = (kind: CredentialKind) => kind === 'login' ? <Globe size={16} /> : kind === 'api_key' ? <Code2 size={16} /> : <FileText size={16} />
 
 // Keep password managers (1Password, LastPass, Bitwarden, Chrome's own) away
 // from this form: these are third-party credentials, not CraftBot's.
@@ -230,6 +230,9 @@ export function PasswordsPanel({ isOpen = true, onClose }: PasswordsPanelProps) 
   const isLogin = kind === 'login'
   const isNote = kind === 'secure_note'
   const secretMax = isNote ? NOTE_MAX : PASSWORD_MAX
+  const secretPlaceholder = editing
+    ? t('minibrowser:credentials.keepValue')
+    : t(isNote ? 'minibrowser:credentials.placeholders.note' : isLogin ? 'minibrowser:credentials.placeholders.password' : 'minibrowser:credentials.placeholders.apiKey')
   const siteProblem = isLogin || site.trim() ? validateSite(site) : null
   const usernameProblem = !isLogin ? null : !username.trim()
     ? t('minibrowser:passwords.required')
@@ -344,6 +347,12 @@ export function PasswordsPanel({ isOpen = true, onClose }: PasswordsPanelProps) 
       ? t('minibrowser:passwords.lastUsed', { date: formatDate(date, { year: 'numeric', month: 'short', day: 'numeric' }) })
       : t('minibrowser:passwords.neverUsed')
   }
+  // The line under the title; a login's site is left out when it is the title.
+  const detailOf = (entry: MiniBrowserVaultEntry): string => {
+    const entryKind = kindOf(entry)
+    if (entryKind !== 'login') return entry.site || t(`minibrowser:credentials.kinds.${entryKind}`)
+    return [entry.label ? entry.site : '', entry.username, lastUsed(entry)].filter(Boolean).join(' · ')
+  }
 
   const content = (
     <div className={styles.body}>
@@ -365,7 +374,7 @@ export function PasswordsPanel({ isOpen = true, onClose }: PasswordsPanelProps) 
       </div></div>}
       <div className={styles.toolbar}>
         <label className={styles.search}>
-          <Search size={17} />
+          <Search size={15} />
           <input type="search" value={filter} onChange={e => setFilter(e.target.value)}
             placeholder={t('minibrowser:credentials.search')} aria-label={t('minibrowser:credentials.search')}
             spellCheck={false} {...NO_AUTOFILL} />
@@ -388,12 +397,7 @@ export function PasswordsPanel({ isOpen = true, onClose }: PasswordsPanelProps) 
           {GROUPS.map(value => <option key={value} value={value}>{t(`minibrowser:credentials.groups.${value}`)}</option>)}
         </select>
       </div>
-      <section className={styles.listSection} aria-label={t('minibrowser:credentials.list')}>
-        <div className={styles.listHeader}>
-          <h4 className={styles.sectionTitle}>{kindFilter === 'all' ? t('minibrowser:credentials.all') : t(`minibrowser:credentials.kinds.${kindFilter}`)}
-            <span className={styles.count}>{visible.length}</span>
-          </h4>
-        </div>
+      <section aria-label={t('minibrowser:credentials.list')}>
         {!loaded ? <div className={styles.loading} role="status"><Loader2 size={16} className={styles.spin} />{t('minibrowser:credentials.loading')}</div>
           : visible.length === 0 ? <div className={styles.emptyState}>
             {entries.length === 0 ? <KeyRound size={28} /> : <Search size={28} />}
@@ -404,12 +408,11 @@ export function PasswordsPanel({ isOpen = true, onClose }: PasswordsPanelProps) 
             {visible.map(entry => <li key={entry.id} className={styles.row}>
               <span className={styles.itemIcon} data-kind={kindOf(entry)}>{kindIcon(kindOf(entry))}</span>
               <div className={styles.rowMain}>
-                <span className={styles.rowSite}>{titleOf(entry)}</span>
-                <span className={styles.rowUser}>{kindOf(entry) === 'login' ? [entry.site, entry.username].filter(Boolean).join(' · ') : entry.site || t(`minibrowser:credentials.kinds.${kindOf(entry)}`)}</span>
-                <span className={styles.rowMeta}>
-                  <span className={styles.groupBadge}>{t(`minibrowser:credentials.groups.${groupOf(entry)}`)}</span>
-                  {kindOf(entry) === 'login' && <span>{lastUsed(entry)}</span>}
-                </span>
+                <div className={styles.rowHeader}>
+                  <span className={styles.rowTitle}>{titleOf(entry)}</span>
+                  <Badge variant="primary" className={styles.rowBadge}>{t(`minibrowser:credentials.groups.${groupOf(entry)}`)}</Badge>
+                </div>
+                <span className={styles.rowDetail}>{detailOf(entry)}</span>
               </div>
               <div className={styles.rowActions}>
                 {kindOf(entry) !== 'login' && <IconButton size="sm" icon={<Eye />} disabled={busy || locked}
@@ -452,13 +455,15 @@ export function PasswordsPanel({ isOpen = true, onClose }: PasswordsPanelProps) 
             <div className={styles.field}>
               <label htmlFor={fieldId('label')}>{t(isLogin ? 'minibrowser:credentials.optionalName' : 'minibrowser:credentials.name')}</label>
               <input ref={!isLogin ? siteRef : undefined} id={fieldId('label')} value={label} onChange={e => setLabel(e.target.value)} disabled={busy} maxLength={LABEL_MAX + 1}
+                placeholder={t(isLogin ? 'minibrowser:passwords.labelPlaceholder' : isNote ? 'minibrowser:credentials.placeholders.noteName' : 'minibrowser:credentials.placeholders.apiKeyName')}
                 aria-invalid={showErrors && !!labelProblem} aria-describedby={showErrors && labelProblem ? fieldId('label-error') : undefined} {...NO_AUTOFILL} />
               {showErrors && labelProblem && <span id={fieldId('label-error')} className={styles.fieldError}>{labelProblem}</span>}
             </div>
             {!isNote && <div className={styles.field}>
               <label htmlFor={fieldId('site')}>{t(isLogin ? 'minibrowser:passwords.site' : 'minibrowser:credentials.optionalWebsite')}</label>
               <input ref={isLogin ? siteRef : undefined} id={fieldId('site')} value={site} onChange={e => setSite(e.target.value)} disabled={busy}
-                inputMode="url" autoCapitalize="off" autoCorrect="off" spellCheck={false} placeholder="example.com"
+                inputMode="url" autoCapitalize="off" autoCorrect="off" spellCheck={false}
+                placeholder={t(isLogin ? 'minibrowser:passwords.sitePlaceholder' : 'minibrowser:credentials.placeholders.apiWebsite')}
                 aria-invalid={showErrors && !!siteMessage} aria-describedby={showErrors && siteMessage ? fieldId('site-error') : fieldId('site-hint')} {...NO_AUTOFILL} />
               {showErrors && siteMessage ? <span id={fieldId('site-error')} className={styles.fieldError}>{siteMessage}</span>
                 : <span id={fieldId('site-hint')} className={styles.fieldHint}>{t(isLogin ? 'minibrowser:passwords.siteHint' : 'minibrowser:credentials.apiWebsiteHint')}</span>}
@@ -466,7 +471,7 @@ export function PasswordsPanel({ isOpen = true, onClose }: PasswordsPanelProps) 
             {isLogin && <div className={styles.field}>
               <label htmlFor={fieldId('username')}>{t('minibrowser:passwords.username')}</label>
               <input id={fieldId('username')} value={username} onChange={e => setUsername(e.target.value)} disabled={busy} maxLength={USERNAME_MAX + 1}
-                autoCapitalize="off" autoCorrect="off" spellCheck={false} aria-invalid={showErrors && !!usernameProblem}
+                placeholder={t('minibrowser:credentials.placeholders.username')} autoCapitalize="off" autoCorrect="off" spellCheck={false} aria-invalid={showErrors && !!usernameProblem}
                 aria-describedby={showErrors && usernameProblem ? fieldId('username-error') : undefined} {...NO_AUTOFILL} />
               {showErrors && usernameProblem && <span id={fieldId('username-error')} className={styles.fieldError}>{usernameProblem}</span>}
             </div>}
@@ -474,10 +479,10 @@ export function PasswordsPanel({ isOpen = true, onClose }: PasswordsPanelProps) 
               <label htmlFor={fieldId('password')}>{t(isNote ? 'minibrowser:credentials.note' : isLogin ? 'minibrowser:passwords.password' : 'minibrowser:credentials.apiKey')}</label>
               <div className={styles.passwordRow}>
                 {isNote ? <textarea id={fieldId('password')} value={password} rows={7} onChange={e => setPassword(e.target.value)} disabled={busy}
-                  maxLength={secretMax + 1} placeholder={editing ? t('minibrowser:credentials.keepValue') : undefined} aria-invalid={showErrors && !!passwordProblem}
+                  maxLength={secretMax + 1} placeholder={secretPlaceholder} aria-invalid={showErrors && !!passwordProblem}
                   aria-describedby={showErrors && passwordProblem ? fieldId('password-error') : undefined} {...NO_AUTOFILL} />
                   : <><input id={fieldId('password')} type={showPassword ? 'text' : 'password'} value={password} onChange={e => setPassword(e.target.value)}
-                    placeholder={editing ? t('minibrowser:credentials.keepValue') : undefined} disabled={busy} maxLength={secretMax + 1}
+                    placeholder={secretPlaceholder} disabled={busy} maxLength={secretMax + 1}
                     autoCapitalize="off" autoCorrect="off" spellCheck={false} aria-invalid={showErrors && !!passwordProblem}
                     aria-describedby={showErrors && passwordProblem ? fieldId('password-error') : undefined} {...NO_AUTOFILL} />
                     <IconButton type="button" variant="secondary" icon={showPassword ? <EyeOff /> : <Eye />} disabled={busy} onClick={() => setShowPassword(value => !value)}

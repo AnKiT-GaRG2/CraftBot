@@ -296,6 +296,15 @@
     "apiKey": "Clave API",
     "note": "Nota",
     "keepValue": "Dejar en blanco para conservar el valor guardado",
+    "placeholders": {
+      "apiKeyName": "p. ej., Clave API de OpenAI",
+      "noteName": "p. ej., Códigos de recuperación",
+      "apiWebsite": "api.example.com",
+      "username": "tu@example.com",
+      "password": "Introduce la contraseña",
+      "apiKey": "Pega la clave API",
+      "note": "Escribe lo que quieras mantener en privado"
+    },
     "loading": "Cargando credenciales…",
     "empty": "Tu bóveda empieza aquí",
     "emptyHint": "Añade un inicio de sesión, una clave API o una nota segura.",

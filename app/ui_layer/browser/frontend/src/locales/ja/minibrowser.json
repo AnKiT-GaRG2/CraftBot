@@ -295,6 +295,15 @@
     "apiKey": "API キー",
     "note": "メモ",
     "keepValue": "空欄のままで保存済みの値を維持",
+    "placeholders": {
+      "apiKeyName": "例: OpenAI の API キー",
+      "noteName": "例: リカバリーコード",
+      "apiWebsite": "api.example.com",
+      "username": "you@example.com",
+      "password": "パスワードを入力",
+      "apiKey": "API キーを貼り付け",
+      "note": "非公開にしておきたい内容を入力"
+    },
     "loading": "認証情報を読み込み中…",
     "empty": "ここから保管庫を始めましょう",
     "emptyHint": "ログイン、API キー、セキュアメモを追加します。",
