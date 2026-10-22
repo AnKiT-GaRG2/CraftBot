@@ -399,7 +399,10 @@ def _bootstrap_state_function(fake_paths):
     return namespace["_bootstrap_state"]
 
 
-def test_run_py_bootstrap_syncs_an_upgraded_install(tmp_path, monkeypatch):
+@pytest.mark.parametrize("dev_checkout", [False, True])
+def test_run_py_bootstrap_syncs_an_upgraded_install(
+    tmp_path, monkeypatch, dev_checkout
+):
     code = tmp_path / "code"
     state = tmp_path / "state"
     _seed_state(_make_code(code, release=1), state)
@@ -407,7 +410,7 @@ def test_run_py_bootstrap_syncs_an_upgraded_install(tmp_path, monkeypatch):
     _make_code(code, release=2)
     monkeypatch.chdir(tmp_path)  # _bootstrap_state chdirs; restored afterwards
     fake_paths = SimpleNamespace(
-        is_dev_checkout=lambda: False, CODE_ROOT=code, STATE_ROOT=state
+        is_dev_checkout=lambda: dev_checkout, CODE_ROOT=code, STATE_ROOT=state
     )
 
     _bootstrap_state_function(fake_paths)()

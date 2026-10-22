@@ -61,7 +61,12 @@ export function QuestionBox({ question, queueTotal, onAnswer, onDismiss }: Quest
   }
 
   return (
-    <div className={styles.box} role="region" aria-label={t('chat:question.aria')}>
+    <div className={styles.box} role="region" aria-label={t('chat:question.aria')}
+      onClickCapture={event => {
+        // The next keyed box can mount between clicks. Only the first click
+        // in a pointer sequence may act; keyboard clicks have detail === 0.
+        if (event.detail > 1) event.stopPropagation()
+      }}>
       <div className={styles.header}>
         <HelpCircle size={14} className={styles.icon} />
         <span className={styles.title}>{t('chat:question.asking', { sender: question.sender })}</span>

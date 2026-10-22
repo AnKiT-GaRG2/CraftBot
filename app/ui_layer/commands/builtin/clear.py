@@ -44,22 +44,27 @@ class ClearCommand(Command):
         # Start the session over on the agent side (stops a run in flight,
         # resets its context and files). First, so the stopped run's last
         # rows are cleared with the rest of the conversation.
-        await self._controller.agent.clear_session(target)
+        if not await self._controller.agent.clear_session(target):
+            return CommandResult(success=False, message="Session could not be cleared.")
+        await self._controller.event_bus.drain(target)
 
         # Clear persisted chat + activity rows for this session
         from app.usage import get_action_storage, get_chat_storage
 
-        get_chat_storage().clear_messages(target)
+        adapter = self._controller.active_adapter
+        if adapter:
+            # Use the adapter's ordered worker so an insert already in flight
+            # cannot land after the delete and restore the old conversation.
+            await adapter.chat_component.clear(target)
+        else:
+            get_chat_storage().clear_messages(target)
         get_action_storage().clear_items(target)
 
         # Tell the UI to drop the session's rendered conversation. Always
         # session-scoped: a /clear must never touch other sessions.
-        adapter = self._controller.active_adapter
         broadcast = getattr(adapter, "broadcast_session_cleared", None)
         if broadcast is not None:
             await broadcast(target)
-        elif adapter:
-            await adapter.chat_component.clear(target)
 
         # Confirm in the now-empty conversation (emitted after the clear so
         # it survives instead of being wiped with the old rows).

@@ -43,6 +43,7 @@ export interface ChatMessage {
 }
 
 export interface GenerativeUIArtifact {
+  persistence?: 'controls' | 'manual' | 'none'
   id: string
   title: string
   html: string

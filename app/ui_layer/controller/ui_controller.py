@@ -364,6 +364,9 @@ class UIController:
                 doesn't re-ask questions that are still pinned in the UI.
         """
         if dismissed:
+            # Share the stop button's cancellation and continuation cleanup,
+            # including runs parked between turns rather than actively busy.
+            await self.stop_run(session_id)
             # One event, two audiences (as with the stop button): the SYSTEM
             # bubble tells the user the interruption landed; the stream copy
             # tells the agent's next run why its question went unanswered.

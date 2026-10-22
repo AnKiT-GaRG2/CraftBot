@@ -23,6 +23,7 @@ const initialState: UiSliceState = {
 interface UiStateChange {
   key: string
   lifetime: UiStateLifetime
+  writeThrough?: boolean
   /** undefined resets the key to its default. */
   value: unknown
 }
@@ -54,7 +55,7 @@ function applyValue(state: UiSliceState, key: string, value: unknown) {
 export const { uiStateChanged, uiStateSynced } = uiSlice.actions
 export default uiSlice.reducer
 
-/** Action creator: back to the descriptor's default (its stored key is removed). */
+/** Back to the descriptor's default, retaining it only when its policy requires. */
 export function resetUiState<T>(descriptor: UiStateDescriptor<T>) {
   return setUiState(descriptor, descriptor.defaultValue)
 }
@@ -64,6 +65,7 @@ export function setUiState<T>(descriptor: UiStateDescriptor<T>, value: T) {
   return uiStateChanged({
     key: descriptor.key,
     lifetime: descriptor.lifetime,
-    value: isDefaultUiValue(descriptor, value) ? undefined : value,
+    writeThrough: descriptor.writeThrough,
+    value: !descriptor.persistDefault && isDefaultUiValue(descriptor, value) ? undefined : value,
   })
 }

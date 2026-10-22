@@ -26,6 +26,204 @@ async function custom(page: Page, html: string, connect_origins: string[] = [], 
 const REPORT_BLOCKED = `<script>addEventListener('securitypolicyviolation', e => { const root = document.documentElement; root.dataset.blocked = ((root.dataset.blocked || '') + ' ' + e.violatedDirective).trim() })</script>`
 const blocked = (page: Page) => preview(page).locator('html')
 
+const cookingStateKey = 'craftbot.ui.chat.artifactState.["demo","cooking"]'
+const controlsHTML = `<label>Count<input id="count" type="number" value="2"></label><output id="total"></output>
+<script>document.getElementById('total').textContent = Number(document.getElementById('count').value) * 3;</script>`
+
+test('progress follows new tabs, edits and resets without restarting local interactions', async ({ page, context }) => {
+  await open(page)
+  const original = await page.locator('iframe').getAttribute('srcdoc')
+  await preview(page).getByLabel('Servings').fill('5')
+  await preview(page).getByLabel('Servings').press('Tab')
+  await preview(page).getByRole('button', { name: 'Next step' }).click()
+  expect(await page.locator('iframe').getAttribute('srcdoc')).toBe(original)
+  await expect.poll(() => page.evaluate(key => JSON.parse(localStorage.getItem(key) || '{}').step, cookingStateKey)).toBe(1)
+  const other = await context.newPage() // No opener: sessionStorage cannot be copied.
+  await open(other)
+  await expect(preview(other).getByLabel('Servings')).toHaveValue('5')
+  await expect(preview(other).getByRole('heading', { name: 'Step 2 of 4' })).toBeVisible()
+  await preview(other).getByRole('button', { name: 'Next step' }).click()
+  await expect(preview(page).getByRole('heading', { name: 'Step 3 of 4' })).toBeVisible()
+  await page.getByRole('button', { name: 'Switch session' }).click()
+  await expect(preview(page).getByLabel('Servings')).toHaveValue('2')
+  await page.getByRole('button', { name: 'Switch session' }).click()
+  await expect(preview(page).getByLabel('Servings')).toHaveValue('5')
+  await previewAction(other, 'Reset saved progress')
+  await expect(preview(page).getByLabel('Servings')).toHaveValue('2')
+  await expect(preview(page).getByRole('heading', { name: 'Step 1 of 4' })).toBeVisible()
+  await other.close()
+})
+
+test('native controls and derived output hydrate when another tab saves', async ({ page, context }) => {
+  await open(page)
+  await custom(page, controlsHTML, [], { persistence: 'controls' })
+  const other = await context.newPage()
+  await open(other)
+  await custom(other, controlsHTML, [], { persistence: 'controls' })
+  await preview(page).getByLabel('Count').fill('9')
+  await expect(preview(other).getByLabel('Count')).toHaveValue('9')
+  await expect(preview(other).locator('#total')).toHaveText('27')
+  await preview(other).getByLabel('Count').fill('11')
+  await expect(preview(page).getByLabel('Count')).toHaveValue('11')
+  await expect(preview(page).locator('#total')).toHaveText('33')
+  await other.getByRole('button', { name: 'Cooking', exact: true }).click()
+  await expect(preview(other).getByLabel('Servings')).toHaveValue('2')
+  await other.close()
+})
+
+test('manual and native progress survive closing Chromium and reopening its disk profile', async ({ browser }, testInfo) => {
+  const profile = testInfo.outputPath('persistent-profile')
+  let context = await browser.browserType().launchPersistentContext(profile, { headless: true })
+  try {
+    let page = await context.newPage()
+    await open(page)
+    await preview(page).getByLabel('Servings').fill('6')
+    await preview(page).getByLabel('Servings').press('Tab')
+    await preview(page).getByRole('checkbox').first().check()
+    await preview(page).getByRole('button', { name: 'Next step' }).click()
+    await expect.poll(() => page.evaluate(key => JSON.parse(localStorage.getItem(key) || '{}').step, cookingStateKey)).toBe(1)
+    await custom(page, controlsHTML, [], { persistence: 'controls' })
+    await preview(page).getByLabel('Count').fill('13')
+    await expect.poll(() => page.evaluate(() => JSON.parse(localStorage.getItem('craftbot.ui.chat.artifactState.["demo","custom"]') || '{}').count)).toBe('13')
+    await context.close()
+    context = await browser.browserType().launchPersistentContext(profile, { headless: true })
+    page = await context.newPage()
+    await open(page)
+    await expect(preview(page).getByLabel('Servings')).toHaveValue('6')
+    await expect(preview(page).getByRole('checkbox').first()).toBeChecked()
+    await expect(preview(page).getByRole('heading', { name: 'Step 2 of 4' })).toBeVisible()
+    await custom(page, controlsHTML, [], { persistence: 'controls' })
+    await expect(preview(page).getByLabel('Count')).toHaveValue('13')
+    await expect(preview(page).locator('#total')).toHaveText('39')
+  } finally {
+    await context.close()
+  }
+})
+
+test('legacy tab progress migrates once and never overwrites durable progress', async ({ page }) => {
+  await page.addInitScript(key => {
+    sessionStorage.setItem(key, JSON.stringify({ servings: 4, step: 1 }))
+  }, cookingStateKey)
+  await open(page)
+  await expect(preview(page).getByLabel('Servings')).toHaveValue('4')
+  expect(await page.evaluate(key => sessionStorage.getItem(key), cookingStateKey)).toBeNull()
+  await preview(page).getByLabel('Servings').fill('7')
+  await preview(page).getByLabel('Servings').press('Tab')
+  await expect.poll(() => page.evaluate(key => JSON.parse(localStorage.getItem(key) || '{}').servings, cookingStateKey)).toBe(7)
+  await page.reload() // Deliberately reintroduces an old tab's stale value.
+  await expect(preview(page).getByLabel('Servings')).toHaveValue('7')
+})
+
+test('valid legacy progress replaces malformed durable data', async ({ page }) => {
+  await page.addInitScript(key => {
+    sessionStorage.setItem(key, JSON.stringify({ servings: 4 }))
+    localStorage.setItem(key, '[1,2]')
+  }, cookingStateKey)
+  await open(page)
+  await expect(preview(page).getByLabel('Servings')).toHaveValue('4')
+  expect(await page.evaluate(key => JSON.parse(localStorage.getItem(key) || '{}').servings, cookingStateKey)).toBe(4)
+})
+
+test('an older buffered write cannot undo a reset from another tab', async ({ page, context }) => {
+  await page.clock.install()
+  await open(page)
+  await page.clock.pauseAt(new Date())
+  await preview(page).getByLabel('Servings').fill('4')
+  await preview(page).getByLabel('Servings').press('Tab')
+  await expect(preview(page).getByText('400 g pasta')).toBeVisible()
+  const other = await context.newPage()
+  await open(other)
+  await previewAction(other, 'Reset saved progress')
+  await other.evaluate(() => window.dispatchEvent(new Event('pagehide')))
+  await expect(preview(page).getByLabel('Servings')).toHaveValue('2')
+  await page.clock.runFor(500)
+  expect(await page.evaluate(key => localStorage.getItem(key), cookingStateKey)).toBe('{}')
+  await other.close()
+})
+
+for (const action of ['reset', 'close']) test(`durable ${action} cannot resurrect progress from a stale legacy tab`, async ({ page }) => {
+  await page.addInitScript(key => sessionStorage.setItem(key, JSON.stringify({ servings: 8 })), cookingStateKey)
+  await open(page)
+  await expect(preview(page).getByLabel('Servings')).toHaveValue('8')
+  if (action === 'reset') await previewAction(page, 'Reset saved progress')
+  else await page.getByRole('button', { name: 'Close Cooking guide', exact: true }).click()
+  await expect.poll(() => page.evaluate(key => localStorage.getItem(key), cookingStateKey)).toBe('{}')
+  await page.reload()
+  if (action === 'close') await outputsButton(page).click()
+  await expect(preview(page).getByLabel('Servings')).toHaveValue('2')
+})
+
+test('a new tab sees the latest progress without waiting for a flush timer', async ({ page, context }) => {
+  await page.clock.install()
+  await open(page)
+  await page.clock.pauseAt(new Date())
+  await preview(page).getByLabel('Servings').fill('8')
+  await preview(page).getByLabel('Servings').press('Tab')
+  await expect(preview(page).getByText('800 g pasta')).toBeVisible()
+  expect(await page.evaluate(key => JSON.parse(localStorage.getItem(key) || '{}').servings, cookingStateKey)).toBe(8)
+  const other = await context.newPage()
+  await open(other)
+  await expect(preview(other).getByLabel('Servings')).toHaveValue('8')
+  await other.close()
+})
+
+test('delayed storage notifications cannot roll back newer local progress', async ({ page }) => {
+  await open(page)
+  await preview(page).getByLabel('Servings').fill('9')
+  await preview(page).getByLabel('Servings').press('Tab')
+  await expect(preview(page).getByText('900 g pasta')).toBeVisible()
+  await page.evaluate(key => window.dispatchEvent(new StorageEvent('storage', {
+    key, storageArea: localStorage, oldValue: '{}', newValue: '{"servings":4}',
+  })), cookingStateKey)
+  await expect(preview(page).getByLabel('Servings')).toHaveValue('9')
+  await expect.poll(() => page.evaluate(key => JSON.parse(localStorage.getItem(key) || '{}').servings, cookingStateKey)).toBe(9)
+})
+
+for (const event of ['chat_clear', 'session_cleared', 'session_deleted']) test(`${event} resets saved outputs outside loaded history and isolates other chats`, async ({ page, context }) => {
+  await open(page)
+  await preview(page).getByLabel('Servings').fill('7')
+  await preview(page).getByLabel('Servings').press('Tab')
+  await expect(preview(page).getByText('700 g pasta')).toBeVisible()
+  const other = await context.newPage()
+  await open(other)
+  await expect(preview(other).getByLabel('Servings')).toHaveValue('7')
+  await page.evaluate(async event => {
+    const { store } = await import('./harness.tsx')
+    const { setUiState } = await import('../src/store/slices/uiSlice')
+    const { UI_STATE } = await import('../src/store/uiState')
+    const { dispatchInbound } = await import('../src/store/socket/messageRegistry.ts')
+    store.dispatch(setUiState(UI_STATE.chat.artifactState('["demo","older-output"]'), { count: 17 }))
+    store.dispatch(setUiState(UI_STATE.chat.artifactState('["other","cooking"]'), { servings: 6 }))
+    dispatchInbound({ type: event, data: { sessionId: 'demo' } }, store.dispatch, store.getState as never)
+  }, event)
+  await expect(preview(other).getByLabel('Servings')).toHaveValue('2')
+  await other.close()
+  await expect(preview(page).getByLabel('Servings')).toHaveValue('2')
+  await expect.poll(() => page.evaluate(() => [
+    localStorage.getItem('craftbot.ui.chat.artifactState.["demo","cooking"]'),
+    localStorage.getItem('craftbot.ui.chat.artifactState.["demo","older-output"]'),
+    JSON.parse(localStorage.getItem('craftbot.ui.chat.artifactState.["other","cooking"]') || '{}').servings,
+  ])).toEqual(['{}', '{}', 6])
+  await page.reload()
+  await expect(preview(page).getByLabel('Servings')).toHaveValue('2')
+})
+
+test('a full durable storage area preserves legacy progress for a later retry', async ({ page }) => {
+  await page.addInitScript(key => {
+    sessionStorage.setItem(key, JSON.stringify({ servings: 4 }))
+    const write = Storage.prototype.setItem
+    Storage.prototype.setItem = function (key, value) {
+      if (this === localStorage) throw new DOMException('Full', 'QuotaExceededError')
+      write.call(this, key, value)
+    }
+  }, cookingStateKey)
+  await open(page)
+  await expect(preview(page).getByLabel('Servings')).toHaveValue('4')
+  expect(await page.evaluate(key => JSON.parse(sessionStorage.getItem(key) || '{}').servings, cookingStateKey)).toBe(4)
+  await preview(page).getByRole('button', { name: 'Next step' }).click()
+  await expect(preview(page).getByRole('heading', { name: 'Step 2 of 4' })).toBeVisible()
+})
+
 test('cooking controls persist across unmount, reload and revision; reset clears progress', async ({ page }) => {
   await open(page)
   await preview(page).getByLabel('Servings').fill('4')
@@ -41,7 +239,7 @@ test('cooking controls persist across unmount, reload and revision; reset clears
   await expect(preview(page).locator('#timer')).toContainText('remaining')
   await page.getByRole('button', { name: 'Revise interface' }).click()
   await expect(preview(page).getByLabel('Servings')).toHaveValue('4')
-  await expect.poll(() => page.evaluate(() => Object.keys(sessionStorage).some(key => key.includes('artifactState')))).toBe(true)
+  await expect.poll(() => page.evaluate(() => Object.keys(localStorage).some(key => key.includes('artifactState')))).toBe(true)
   await page.reload()
   await expect(preview(page).getByLabel('Servings')).toHaveValue('4')
   await previewAction(page, 'Reset saved progress')
@@ -429,7 +627,7 @@ test("outputs are tabs like the browser's, with reload and options at the strip'
 test('closing an output tab disposes of it: its progress and tab go, the last one closes the panel', async ({ page }) => {
   await open(page)
   await page.evaluate(output => window.dispatchEvent(new CustomEvent('fixture-history', { detail: [output] })), notesOutput)
-  const savedCooking = () => page.evaluate(() => Object.keys(sessionStorage).filter(key => key.includes('artifactState') && key.includes('cooking')).length)
+  const savedCooking = () => page.evaluate(() => Object.keys(JSON.parse(localStorage.getItem('craftbot.ui.chat.artifactState.["demo","cooking"]') || '{}')).length > 0 ? 1 : 0)
   await preview(page).getByRole('button', { name: 'Next step' }).click()
   await expect.poll(savedCooking).toBe(1)
   const pane = page.getByRole('region', { name: 'Output panel' })
@@ -605,7 +803,7 @@ test('page errors stay out of the panel, forged messages are ignored and oversiz
   await previewAction(page, 'Reload preview')
   await expect(preview(page).getByText('Broken example')).toBeVisible()
   await expect(page.getByRole('alert')).toHaveCount(0)
-  expect(await page.evaluate(() => JSON.stringify(sessionStorage))).not.toContain('forged')
+  expect(await page.evaluate(() => JSON.stringify(localStorage))).not.toContain('forged')
 })
 
 test('document attributes and state strings survive rendering without executing injected markup', async ({ page }) => {
@@ -798,4 +996,59 @@ test('stored images reach the page as window.craftbot.images; an unavailable one
   available = true
   await page.getByRole('button', { name: 'Try again' }).click()
   await expect(preview(page).locator('#names')).toHaveText('hero')
+})
+
+
+test('declared native controls persist without author save handlers and hydrate before derived scripts', async ({ page }) => {
+  await open(page)
+  const html = `<form>
+    <label>Budget<input type="number" id="budget" value="10"></label>
+    <label>Done<input type="checkbox" id="done"></label>
+    <label for="notes">Notes</label><textarea id="notes">initial</textarea>
+    <label for="city">City</label><select id="city"><option value="ldn">London</option><option value="par">Paris</option></select>
+    <label>A<input type="radio" name="kind" value="a" data-craftbot-state="kind" checked></label>
+    <label>B<input type="radio" name="kind" value="b" data-craftbot-state="kind"></label>
+    <label for="tags">Tags</label><select id="tags" multiple><option value="x">X</option><option value="y">Y</option></select>
+    <input type="password" id="secret"><input type="file" id="file">
+    <button type="reset">Reset fields</button><output id="derived"></output>
+    </form><script>document.getElementById('derived').textContent = document.getElementById('budget').value * 3;</script>`
+  await custom(page, html, [], { persistence: 'controls' })
+  await preview(page).getByLabel('Budget', { exact: true }).fill('37')
+  await preview(page).getByLabel('Done', { exact: true }).check()
+  await preview(page).getByLabel('Notes', { exact: true }).fill('Saved notes')
+  await preview(page).getByLabel('City', { exact: true }).selectOption('par')
+  await preview(page).getByLabel('B', { exact: true }).check()
+  await preview(page).getByLabel('Tags', { exact: true }).selectOption(['x', 'y'])
+  await preview(page).locator('#secret').fill('never persist me')
+  await previewAction(page, 'Reload preview')
+  await expect(preview(page).getByLabel('Budget', { exact: true })).toHaveValue('37')
+  await expect(preview(page).getByLabel('Done', { exact: true })).toBeChecked()
+  await expect(preview(page).getByLabel('Notes', { exact: true })).toHaveValue('Saved notes')
+  await expect(preview(page).getByLabel('City', { exact: true })).toHaveValue('par')
+  await expect(preview(page).getByLabel('B', { exact: true })).toBeChecked()
+  await expect(preview(page).getByLabel('Tags', { exact: true })).toHaveValues(['x', 'y'])
+  await expect(preview(page).locator('#secret')).toHaveValue('')
+  await expect(preview(page).locator('#derived')).toHaveText('111')
+  // A revision changes markup but keeps the declared stable keys.
+  await custom(page, html.replace('value="10"', 'value="20"'), [], { persistence: 'controls', revision: 2 })
+  await expect(preview(page).getByLabel('Budget', { exact: true })).toHaveValue('37')
+  await expect(preview(page).locator('#derived')).toHaveText('111')
+  await previewAction(page, 'Reset saved progress')
+  await expect(preview(page).getByLabel('Budget', { exact: true })).toHaveValue('20')
+  await expect(preview(page).getByLabel('Done', { exact: true })).not.toBeChecked()
+})
+
+
+test('implicit option values and empty radio values restore with native HTML semantics', async ({ page }) => {
+  await open(page)
+  await custom(page, `<label for="destination">Destination</label>
+    <select id="destination"><option>Home</option><option>  New \n York  </option></select>
+    <label>Unset<input type="radio" name="choice" data-craftbot-state="choice" value="" checked></label>
+    <label>Set<input type="radio" name="choice" data-craftbot-state="choice" value="set"></label>`, [], { persistence: 'controls' })
+  await preview(page).getByLabel('Destination').selectOption({ label: 'New York' })
+  await preview(page).getByLabel('Set', { exact: true }).check()
+  await preview(page).getByLabel('Unset', { exact: true }).check()
+  await previewAction(page, 'Reload preview')
+  await expect(preview(page).getByLabel('Destination')).toHaveValue('New York')
+  await expect(preview(page).getByLabel('Unset', { exact: true })).toBeChecked()
 })

@@ -480,6 +480,93 @@ def test_a_browser_reopens_its_pages_where_it_left_off(site, paths, sink):
         run(host.shutdown(timeout=30))
 
 
+def test_restored_metadata_does_not_allow_reading_before_document_commit(site, paths):
+    """An event barrier forces the restore race; no timing-dependent sleeps."""
+    import_playwright_or_skip()
+    config.profile_dir("chat-a").mkdir(parents=True)
+    resume.save_pages(
+        config.profile_dir("chat-a"),
+        resume.Pages(pages=(resume.Page(site.url("/set"), "Set"),), viewed=0),
+    )
+    host = make_host()
+
+    async def exercise(core):
+        release, waiting = asyncio.Event(), asyncio.Event()
+        goto, wait = core._goto, core._wait_for_reopen
+
+        async def delayed(tab, url):
+            await release.wait()
+            await goto(tab, url)
+
+        async def observed(tab):
+            waiting.set()
+            await wait(tab)
+
+        core._goto, core._wait_for_reopen = delayed, observed
+        await core.ensure_started()
+        reader = asyncio.create_task(core.agent_op("chat-a", "read", {}))
+        try:
+            await asyncio.wait_for(waiting.wait(), 5)
+            assert not reader.done()
+            tab = core.tabs[core.viewed_tab_id]
+            assert tab.url == site.url("/set")
+            assert tab.page.url == "about:blank"
+        finally:
+            release.set()
+        result = await reader
+        assert result["status"] == "success", result
+        assert result["url"] == site.url("/set")
+
+    try:
+        run(host.call("chat-a", exercise))
+    finally:
+        run(host.shutdown(timeout=30))
+
+
+@pytest.mark.parametrize("human_action", ["navigate", "take_control"])
+def test_human_input_supersedes_a_pending_restored_document(site, paths, human_action):
+    import_playwright_or_skip()
+    config.profile_dir("chat-a").mkdir(parents=True)
+    resume.save_pages(config.profile_dir("chat-a"), resume.Pages(
+        pages=(resume.Page(site.url("/set"), "Set"),), viewed=0))
+    host = make_host()
+
+    async def exercise(core):
+        entered, release = asyncio.Event(), asyncio.Event()
+        goto = core._goto
+
+        async def delayed(tab, url):
+            if url == site.url("/set"):
+                entered.set()
+                await release.wait()
+            await goto(tab, url)
+
+        core._goto = delayed
+        await core.ensure_started()
+        await asyncio.wait_for(entered.wait(), 5)
+        tab = core.tabs[core.viewed_tab_id]
+        restore = core._reopen_tasks[tab.id]
+        try:
+            if human_action == "navigate":
+                await core.ui_navigate(tab.id, site.url("/page"))
+            else:
+                await core.ui_control(tab.id, True)
+            assert tab.id not in core._reopen_tasks
+            await asyncio.sleep(0)
+            assert restore.cancelled()
+            if human_action == "navigate":
+                assert tab.page.url == site.url("/page")
+            else:
+                assert tab.user_control
+        finally:
+            release.set()
+
+    try:
+        run(host.call("chat-a", exercise))
+    finally:
+        run(host.shutdown(timeout=30))
+
+
 def test_tabs_carry_their_site_icons(site, paths):
     """Each tab's state carries its site's icon as an inline image: the one
     the page declares, else the site's /favicon.ico; a blank page has none."""

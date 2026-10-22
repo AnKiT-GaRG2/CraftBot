@@ -66,6 +66,9 @@ export function buildDocument(artifact: GenerativeUIArtifact, state: Record<stri
     for (const node of parent.childNodes) {
       if (!('tagName' in node)) continue
       node.attrs = node.attrs.filter(attr => !/^on/i.test(attr.name) && !['nonce', 'integrity', 'srcdoc', 'target', 'ping'].includes(attr.name))
+      // Hydrate while inert, before author scripts calculate derived output.
+      // Old artifacts keep their manual state API; new outputs declare controls.
+      if (artifact.persistence === 'controls') hydrateControl(node, state)
       pending.push(node)
       if ('content' in node) pending.push((node as DefaultTreeAdapterTypes.Template).content)
     }
@@ -117,6 +120,30 @@ export function buildDocument(artifact: GenerativeUIArtifact, state: Record<stri
         state = JSON.parse(json); send('state', { state });
       }
     }), writable: false, configurable: false });
+    if (${scriptJSON(artifact.persistence ?? 'manual')} === 'controls') {
+      const keyFor = el => {
+        if (!el?.matches?.('input,select,textarea') || ['password','file','hidden','button','submit','reset','image'].includes(el.type)) return null;
+        const key = el.getAttribute('data-craftbot-state') || el.id;
+        return key && /^[A-Za-z0-9_-]{1,80}$/.test(key) && !['__proto__','constructor','prototype'].includes(key) ? key : null;
+      };
+      const valueFor = el => el.type === 'checkbox' ? el.checked :
+        el.multiple ? Array.from(el.selectedOptions, option => option.value) : el.value;
+      const changed = e => {
+        const el = e.target, key = keyFor(el);
+        if (!key || (el.type === 'radio' && !el.checked)) return;
+        window.craftbot.saveState({ ...state, [key]: valueFor(el) });
+      };
+      addEventListener('input', changed, true);
+      addEventListener('change', changed, true);
+      addEventListener('reset', e => queueMicrotask(() => {
+        const next = { ...state };
+        for (const el of e.target.elements || []) {
+          const key = keyFor(el);
+          if (key && (el.type !== 'radio' || el.checked)) next[key] = valueFor(el);
+        }
+        window.craftbot.saveState(next);
+      }), true);
+    }
     // Links/forms are UI controls, never a way to leave the runtime.
     addEventListener('click', e => { if (e.target?.closest?.('a, area')) e.preventDefault(); }, true);
     addEventListener('submit', e => e.preventDefault(), true);
@@ -151,4 +178,40 @@ export function buildDocument(artifact: GenerativeUIArtifact, state: Record<stri
   for (const node of prefix.childNodes) node.parentNode = head
   head.childNodes.unshift(...prefix.childNodes)
   return '<!doctype html>\n' + serializeOuter(html)
+}
+
+/** Restore native controls before any generated script executes. */
+function hydrateControl(node: DefaultTreeAdapterTypes.Element, state: Record<string, unknown>) {
+  if (!['input', 'select', 'textarea'].includes(node.tagName)) return
+  const attr = (name: string) => node.attrs.find(a => a.name === name)?.value
+  const kind = (attr('type') || 'text').toLowerCase()
+  if (['password', 'file', 'hidden', 'button', 'submit', 'reset', 'image'].includes(kind.toLowerCase())) return
+  const key = attr('data-craftbot-state') || attr('id')
+  if (!key || ['__proto__', 'constructor', 'prototype'].includes(key) || !Object.prototype.hasOwnProperty.call(state, key)) return
+  const value = state[key]
+  const set = (el: DefaultTreeAdapterTypes.Element, name: string, value?: string) => {
+    el.attrs = el.attrs.filter(a => a.name !== name)
+    if (value !== undefined) el.attrs.push({ name, value })
+  }
+  if (node.tagName === 'textarea' && typeof value === 'string') {
+    node.childNodes = [{ nodeName: '#text', value, parentNode: node }]
+  } else if (node.tagName === 'select') {
+    const values = Array.isArray(value) ? value : [value]
+    const walk = (parent: DefaultTreeAdapterTypes.ParentNode) => {
+      for (const child of parent.childNodes) if ('tagName' in child) {
+        if (child.tagName === 'option') {
+          const option = child.attrs.find(a => a.name === 'value')?.value ?? child.childNodes
+            .map(n => 'value' in n ? n.value : '').join('')
+            .replace(/[\t\n\f\r ]+/g, ' ').replace(/^ | $/g, '')
+          set(child, 'selected', values.includes(option) ? '' : undefined)
+        }
+        walk(child)
+      }
+    }
+    walk(node)
+  } else if (kind === 'checkbox' && typeof value === 'boolean') {
+    set(node, 'checked', value ? '' : undefined)
+  } else if (kind === 'radio' && typeof value === 'string') {
+    set(node, 'checked', value === (attr('value') ?? 'on') ? '' : undefined)
+  } else if (typeof value === 'string') set(node, 'value', value)
 }

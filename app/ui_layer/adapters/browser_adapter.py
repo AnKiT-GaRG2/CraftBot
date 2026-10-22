@@ -1086,13 +1086,13 @@ class BrowserAdapter(InterfaceAdapter):
         except Exception as e:
             logger.warning(f"[BROWSER ADAPTER] enhance_prompt failed: {e}")
 
-    def _handle_reasoning(self, event: UIEvent) -> None:
+    def _handle_reasoning(self, event: UIEvent) -> Optional[asyncio.Task]:
         """Handle reasoning event — add it to the session's activity feed."""
         session_id = event.data.get("session_id") or "main"
         reasoning_id = event.data.get("reasoning_id", "")
         content = event.data.get("content", "")
 
-        asyncio.create_task(
+        return asyncio.create_task(
             self._action_panel.add_item(
                 ActionItem(
                     id=reasoning_id,
@@ -1105,7 +1105,7 @@ class BrowserAdapter(InterfaceAdapter):
             )
         )
 
-    def _handle_run_state_change(self, event: UIEvent) -> None:
+    def _handle_run_state_change(self, event: UIEvent) -> Optional[asyncio.Task]:
         """Broadcast a session's run state (typing indicator + stop button).
 
         ``state`` is "running" | "stopping" | "idle"; ``busy`` is the
@@ -1114,7 +1114,7 @@ class BrowserAdapter(InterfaceAdapter):
         session_id = event.data.get("session_id") or "main"
         busy = bool(event.data.get("busy", False))
         state = event.data.get("state") or ("running" if busy else "idle")
-        asyncio.create_task(
+        return asyncio.create_task(
             self._broadcast(
                 {
                     "type": "session_busy",
@@ -4573,7 +4573,9 @@ A quick Q&A will now begin to understand your objectives to serve you better:"""
 
             # Agent side first: it stops a run in flight, whose last rows
             # must go with the conversation rather than land after the clear.
-            await self._controller.agent.clear_session(session_id)
+            if not await self._controller.agent.clear_session(session_id):
+                return
+            await self._controller.event_bus.drain(session_id)
             try:
                 # Ordered storage worker: runs after any insert still queued
                 # for this session, so no message resurfaces after the clear.

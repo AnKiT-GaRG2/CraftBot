@@ -54,10 +54,9 @@ except Exception:
 # cross-session parallelism (LLM rate limits, local resource pressure).
 DEFAULT_MAX_CONCURRENT_TURNS = 3
 
-# How long a user force-stop waits for the cancelled turn to settle before
-# finalizing anyway. Cancellation is normally near-instant (LLM HTTP calls
-# and async actions unwind at the next await); this guard only exists so a
-# stuck await can never leave the UI on "stopping" forever.
+# How long a stop/clear request waits before reporting failure. Timed-out
+# turns remain stopping until they actually settle; callers must not reset
+# context while old work can still write to it.
 STOP_SETTLE_TIMEOUT_S = 15.0
 
 ReactFn = Callable[[Trigger], Awaitable[None]]
@@ -73,11 +72,12 @@ class _StopSignal:
     await full shutdown (the UI's stop-spinner ends on this).
     """
 
-    __slots__ = ("requested", "settled")
+    __slots__ = ("requested", "settled", "processes_stopped")
 
     def __init__(self) -> None:
         self.requested = False
         self.settled = asyncio.Event()
+        self.processes_stopped = asyncio.Event()
 
 
 # Sources that must never be folded into another trigger's turn.
@@ -322,50 +322,70 @@ class SessionRuntimeManager:
 
         Returns True when there was a run to stop. Awaits full settlement
         (bounded by STOP_SETTLE_TIMEOUT_S) before returning, so the caller
-        can treat the return as "everything is shut".
+        can treat a successful return as "everything is shut". Raises on
+        timeout or process-shutdown failure instead of claiming success.
         """
+        signal = self._stops.get(session_id)
+        if signal is not None:
+            # Repeated stop/clear requests join the same cancellation. A
+            # second cancel could interrupt the first turn's cleanup.
+            await asyncio.wait_for(signal.settled.wait(), STOP_SETTLE_TIMEOUT_S)
+            return True
         purged = await self._purge_continuations(session_id)
+        signal = self._stops.get(session_id)
+        if signal is not None:
+            await asyncio.wait_for(signal.settled.wait(), STOP_SETTLE_TIMEOUT_S)
+            return True
         turn = self._turns.get(session_id)
         turn_inflight = turn is not None and not turn.done()
 
         if not turn_inflight:
-            if purged and self._on_stopped:
-                # The run lived only as queued continuation rows.
-                await self._on_stopped(session_id)
+            if purged:
+                # Fence fresh work while the parked run's async finalizer
+                # settles. Overlapping requests join this stop as well.
+                signal = self._stops[session_id] = _StopSignal()
+                try:
+                    if self._on_stopped:
+                        await self._on_stopped(session_id)
+                finally:
+                    self._stops.pop(session_id, None)
+                    signal.settled.set()
             return bool(purged)
 
         signal = self._stops.setdefault(session_id, _StopSignal())
         signal.requested = True
+        turn.cancel()
 
-        # Kill real OS work first so pool threads blocked on a child process
-        # unblock, then cancel the turn's await chain. Blocking kill runs in
-        # a worker thread to keep the event loop free.
+        # Cancel before yielding so a naturally finishing turn cannot escape
+        # settlement. The consumer holds this lane until OS work is shut down.
         try:
             from agent_core.core.impl.action.cancellation import (
                 kill_session_processes,
             )
 
-            await asyncio.get_running_loop().run_in_executor(
+            kill = asyncio.get_running_loop().run_in_executor(
                 None, kill_session_processes, session_id
             )
+            # A disconnected caller must not release the lane while the
+            # process-kill worker can still affect this session's next run.
+            kill.add_done_callback(lambda _: signal.processes_stopped.set())
+            await asyncio.shield(kill)
         except Exception as e:
+            signal.processes_stopped.set()
             logger.warning(f"[SessionRuntime] Process kill failed: {e}")
+            raise
 
-        turn.cancel()
         try:
             await asyncio.wait_for(signal.settled.wait(), STOP_SETTLE_TIMEOUT_S)
         except asyncio.TimeoutError:
-            # The turn is stuck in a non-cancellable await. Finalize anyway:
-            # the UI must reach idle, and the abandoned coroutine can no
-            # longer enqueue continuations once its triggers settle.
+            # Keep the lane stopping: resetting context while the old turn
+            # can still write would resurrect cleared work. A retry joins
+            # this signal, and normal settlement still finalizes it once.
             logger.error(
                 f"[SessionRuntime] Stop settlement timed out for {session_id}; "
-                "finalizing forcefully."
+                "the turn is still stopping."
             )
-            self._stops.pop(session_id, None)
-            await self._purge_continuations(session_id)
-            if self._on_stopped:
-                await self._on_stopped(session_id)
+            raise
         return True
 
     async def _purge_continuations(self, session_id: str) -> int:
@@ -420,6 +440,20 @@ class SessionRuntimeManager:
             self._consume(session_id, queue),
             name=f"session-loop-{session_id}",
         )
+
+    async def _run_turn(self, session_id: str, trig: Trigger) -> None:
+        signal = self._stops.get(session_id)
+        if signal is not None:
+            await signal.settled.wait()
+        try:
+            async with self._turn_semaphore:
+                await self._react(trig)
+        finally:
+            signal = self._stops.get(session_id)
+            if signal is not None and signal.requested:
+                # Also settle a turn that swallowed cancellation or returned
+                # while cancellation was requested.
+                raise asyncio.CancelledError
 
     async def _consume(self, session_id: str, queue: SessionTriggerQueue) -> None:
         """The serial agent loop for one session: claim → react → settle.
@@ -490,21 +524,20 @@ class SessionRuntimeManager:
                     trig = _merge_triggers(trig, extras)
 
                 try:
-                    async with self._turn_semaphore:
-                        # The turn runs as its own task so request_stop can
-                        # cancel exactly this turn without tearing down the
-                        # session loop.
-                        turn = asyncio.create_task(
-                            self._react(trig), name=f"turn-{session_id}"
-                        )
-                        self._turns[session_id] = turn
-                        try:
-                            await turn
-                        finally:
-                            self._turns.pop(session_id, None)
+                    # Track capacity waits too: claimed work must not start
+                    # after a stop/clear simply because another lane was busy.
+                    turn = asyncio.create_task(
+                        self._run_turn(session_id, trig), name=f"turn-{session_id}"
+                    )
+                    self._turns[session_id] = turn
+                    try:
+                        await turn
+                    finally:
+                        self._turns.pop(session_id, None)
                 except asyncio.CancelledError:
                     signal = self._stops.get(session_id)
                     if signal is not None and signal.requested and self._running:
+                        await signal.processes_stopped.wait()
                         # User force-stop, not process shutdown: the rows were
                         # consumed by user intent — ack them (nack would
                         # redeliver and restart the very work the user

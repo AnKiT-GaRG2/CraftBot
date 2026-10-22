@@ -2,6 +2,7 @@
 
 import re
 import uuid
+from html.parser import HTMLParser
 from pathlib import Path
 
 MAX_HTML_BYTES = 512_000
@@ -13,6 +14,45 @@ MAX_IMAGES = 8
 MAX_IMAGE_BYTES = 8_000_000
 MAX_TOTAL_IMAGE_BYTES = 16_000_000
 IMAGE_NAME = re.compile(r"[A-Za-z_][A-Za-z0-9_]{0,39}")
+
+
+def persistence_contract(html: str, mode: object) -> str:
+    """Validate a declared persistence strategy, without inspecting JS wording."""
+    if mode not in ("controls", "manual", "none"):
+        raise ValueError("persistence must be controls, manual or none.")
+    if mode != "controls":
+        return mode
+
+    class Controls(HTMLParser):
+        keys: dict[str, str] = {}
+
+        def handle_starttag(self, tag, attrs):
+            attrs = dict(attrs)
+            kind = (attrs.get("type") or "text").lower()
+            if tag not in ("input", "select", "textarea") or (
+                tag == "input" and kind in ("button", "submit", "reset", "image")
+            ):
+                return
+            if kind in ("password", "file", "hidden"):
+                raise ValueError(
+                    "Sensitive/file/hidden controls require manual persistence; never save secrets."
+                )
+            key = attrs.get("data-craftbot-state") or attrs.get("id")
+            if (
+                not key
+                or not re.fullmatch(r"[A-Za-z0-9_-]{1,80}", key)
+                or key in ("__proto__", "constructor", "prototype")
+            ):
+                raise ValueError(
+                    "Every persisted control needs a stable id or data-craftbot-state key."
+                )
+            if key in self.keys and not (kind == "radio" and self.keys[key] == "radio"):
+                raise ValueError(f"Duplicate persistence key: {key}")
+            self.keys[key] = kind
+
+    parser = Controls()
+    parser.feed(html)
+    return mode
 
 
 def normalize_origins(value: object, field: str) -> list[str]:
@@ -146,4 +186,5 @@ def make_artifact(data: dict, revision: int = 1) -> dict:
         "connect_origins": connect_origins,
         "image_origins": image_origins,
         "libraries": libraries,
+        "persistence": persistence_contract(html, data.get("persistence", "manual")),
     }

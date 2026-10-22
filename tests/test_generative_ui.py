@@ -37,6 +37,39 @@ def artifact():
 
 
 @pytest.mark.parametrize(
+    "html",
+    [
+        "<input>",
+        "<textarea></textarea>",
+        "<select></select>",
+        '<input id="a"><textarea id="a"></textarea>',
+        '<input type="password" id="secret">',
+        '<input type="file" id="upload">',
+        '<input id="__proto__">',
+    ],
+)
+def test_controls_contract_rejects_unpersistable_or_sensitive_fields(html):
+    with pytest.raises(ValueError):
+        make_artifact({"title": "Fields", "html": html, "persistence": "controls"})
+
+
+def test_controls_contract_accepts_stable_keys_and_manual_custom_outputs():
+    html = '<input id="amount"><input type id="default-type"><input type="radio" data-craftbot-state="choice" value="a"><input type="radio" data-craftbot-state="choice" value="b">'
+    assert (
+        make_artifact({"title": "Form", "html": html, "persistence": "controls"})[
+            "persistence"
+        ]
+        == "controls"
+    )
+    assert (
+        make_artifact(
+            {"title": "Canvas", "html": "<canvas></canvas>", "persistence": "manual"}
+        )["persistence"]
+        == "manual"
+    )
+
+
+@pytest.mark.parametrize(
     "change",
     [
         {"title": " "},

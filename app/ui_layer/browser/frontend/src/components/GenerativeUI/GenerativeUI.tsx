@@ -31,10 +31,16 @@ export function GenerativeUI({ artifact, sessionId, controlsTarget, versions, on
   timeoutText.current = t('generativeUI.timeout')
   const [state, saveState] = usePersistedState(UI_STATE.chat.artifactState(JSON.stringify([sessionId, artifact.id])))
   const stateRef = useRef(state)
-  stateRef.current = state
   const frame = useRef<HTMLIFrameElement>(null)
   const options = useRef<HTMLDetailsElement>(null)
   const [attempt, setAttempt] = useState(0)
+  // Another tab changed progress: rehydrate arbitrary author state by rebuilding
+  // the document. Local interactions mark stateRef first and keep their frame.
+  useLayoutEffect(() => {
+    if (stateRef.current === state) return
+    stateRef.current = state
+    setAttempt(value => value + 1)
+  }, [state])
   const [paused, setPaused] = useState(false)
   const [status, setStatus] = useState<'loading' | 'ready' | 'error'>('loading')
   const [error, setError] = useState('')
@@ -94,7 +100,10 @@ export function GenerativeUI({ artifact, sessionId, controlsTarget, versions, on
           setStatus(current => current === 'error' ? current : 'ready')
           break
         case 'state':
-          if (validState(data.state)) saveState(data.state)
+          if (validState(data.state)) {
+            stateRef.current = data.state
+            saveState(data.state)
+          }
           break
       }
     }
@@ -108,7 +117,7 @@ export function GenerativeUI({ artifact, sessionId, controlsTarget, versions, on
   const restart = (reset = false) => {
     if (options.current?.open) { options.current.open = false; options.current.querySelector('summary')?.focus() }
     setConfirmReset(false)
-    if (reset) { stateRef.current = {}; saveState({}) }
+    if (reset) { stateRef.current = {}; saveState(stateRef.current) }
     setPaused(false)
     setAttempt(value => value + 1)
   }
