@@ -599,6 +599,16 @@ _OPENROUTER_CLAUDE_46 = ReasoningRule(
     off=ReasoningOff.OMIT,
     temperature=TemperaturePolicy.OMIT_WHILE_THINKING,
 )
+#: Claude Sonnet 5.5 / Opus 5.5: reasoning is mandatory (default high) and
+#: temperature is not a supported parameter.
+_OPENROUTER_CLAUDE_ALWAYS_THINKING = ReasoningRule(
+    wire=ReasoningWire.OPENROUTER_EFFORT,
+    levels=("low", "medium", "high", "xhigh", "max"),
+    provider_default="high",
+    source=_OPENROUTER_MODELS,
+    output_tokens=_ANTHROPIC_OUTPUT_TOKENS,
+    temperature=TemperaturePolicy.OMIT_ALWAYS,
+)
 _OPENROUTER_OPENAI_GPT5 = ReasoningRule(
     wire=ReasoningWire.OPENROUTER_EFFORT,
     levels=("minimal", "low", "medium", "high"),
@@ -765,6 +775,19 @@ _KIMI_K3 = ReasoningRule(
     extended_output_tokens=_EFFORT_EXTENDED_OUTPUT_TOKENS,
 )
 
+# ── MiniMax (``reasoning_effort``) ──
+# https://platform.minimax.io/docs/api-reference/text-openai-api: M3.1 Flash
+# takes low/medium/high/xhigh/max, defaults to max, and cannot stop thinking.
+
+_MINIMAX_M31_FLASH = ReasoningRule(
+    wire=ReasoningWire.EFFORT,
+    levels=("low", "medium", "high", "xhigh", "max"),
+    provider_default="max",
+    source="https://platform.minimax.io/docs/api-reference/text-openai-api",
+    output_tokens=_EFFORT_OUTPUT_TOKENS,
+    extended_output_tokens=_EFFORT_EXTENDED_OUTPUT_TOKENS,
+)
+
 # ── gpt-oss on Groq / Cerebras (``reasoning_effort``) ──
 # low/medium/high, default medium; always reasons; out-of-set values are a
 # 400. Output caps are clamped further by each provider profile's
@@ -927,6 +950,11 @@ REASONING_RULES: Mapping[str, Mapping[str, ReasoningRule]] = {
             "anthropic/claude-sonnet-4.6",
             "anthropic/claude-opus-4.6",
         ),
+        _models(
+            _OPENROUTER_CLAUDE_ALWAYS_THINKING,
+            "anthropic/claude-sonnet-5.5",
+            "anthropic/claude-opus-5.5",
+        ),
         _models(_OPENROUTER_OPENAI_GPT5, "openai/gpt-5", "openai/gpt-5-mini"),
         _models(_OPENROUTER_OPENAI_GPT51, "openai/gpt-5.1"),
         _models(
@@ -990,6 +1018,9 @@ REASONING_RULES: Mapping[str, Mapping[str, ReasoningRule]] = {
     ),
     "moonshot": _surface(
         _models(_KIMI_K3, "kimi-k3"),
+    ),
+    "minimax": _surface(
+        _models(_MINIMAX_M31_FLASH, "MiniMax-M3.1-Flash"),
     ),
     "groq": _surface(
         _models(
@@ -1076,6 +1107,7 @@ REASONING_RULES: Mapping[str, Mapping[str, ReasoningRule]] = {
             _BEDROCK_CLAUDE_ALWAYS_THINKING,
             *_bedrock_ids("anthropic.claude-fable-5", "us", "global"),
             *_bedrock_ids("anthropic.claude-fable-5-1", "us", "global"),
+            *_bedrock_ids("anthropic.claude-sonnet-5-5", "us", "eu", "au", "global"),
         ),
         _models(
             _BEDROCK_CLAUDE_OPUS_55,

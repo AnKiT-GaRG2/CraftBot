@@ -483,8 +483,9 @@ export function OnboardingPage() {
   // Providers that route through OpenRouter - model slug is configurable.
   const OR_PROXIED = ['moonshot', 'minimax']
   const OR_MODEL_DEFAULTS: Record<string, string> = {
-    moonshot: 'moonshotai/kimi-k2.5',
-    minimax: 'minimax/minimax-01',
+    moonshot: 'moonshotai/kimi-k2.6',
+    // OpenRouter lists MiniMax M3.1 Flash only as a free variant so far.
+    minimax: 'minimax/minimax-m3',
   }
 
   // Subscription OAuth (ChatGPT Plus/Pro, SuperGrok). The connect/status
@@ -815,7 +816,7 @@ export function OnboardingPage() {
                 className={styles.textInput}
                 value={orModel}
                 onChange={e => setOrModel(e.target.value)}
-                placeholder={OR_MODEL_DEFAULTS[onboardingStep.provider!] ?? 'e.g. moonshotai/kimi-k2.5'}
+                placeholder={OR_MODEL_DEFAULTS[onboardingStep.provider!] ?? 'e.g. moonshotai/kimi-k2.6'}
               />
             </div>
           )}

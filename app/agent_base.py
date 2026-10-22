@@ -304,9 +304,10 @@ class AgentBase:
             deferred=True,  # always deferred — many users won't have an image-gen key
         )
 
-        # Video generation uses its own provider/model settings (defaults to
-        # Gemini Veo since it's the strongest free-tier option). Always
-        # deferred — most users won't have a video-gen key configured.
+        # Video generation uses its own provider/model settings. Always
+        # deferred — most users won't have a video-gen key configured, and a
+        # provider without a video model (Gemini and OpenAI, whose Veo and
+        # Sora were retired) stays uninitialized instead of raising.
         from app.config import (
             get_video_gen_provider as _get_vid_prov,
             get_video_gen_model as _get_vid_model,

@@ -96,7 +96,7 @@ def _get_default_settings() -> Dict[str, Any]:
             "llm_provider": "anthropic",
             "vlm_provider": "anthropic",
             "image_gen_provider": "openai",
-            "video_gen_provider": "gemini",
+            "video_gen_provider": "byteplus",
             "llm_model": None,
             "vlm_model": None,
             "context_window": 128000,
@@ -306,14 +306,12 @@ def get_image_gen_model() -> Optional[str]:
 def get_video_gen_provider() -> str:
     """Get configured video generation provider.
 
-    Falls back to the image-gen provider, then to a sensible default
-    ('gemini' since Veo is the strongest free-tier video model).
+    Falls back to 'byteplus', the only built-in provider with a video model
+    since Google Veo and OpenAI Sora were retired upstream.
     """
     settings = get_settings()
     model = settings.get("model", {})
-    return (
-        model.get("video_gen_provider") or model.get("image_gen_provider") or "gemini"
-    )
+    return model.get("video_gen_provider") or "byteplus"
 
 
 def get_video_gen_model() -> Optional[str]:

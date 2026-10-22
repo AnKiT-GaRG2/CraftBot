@@ -1868,7 +1868,7 @@ model:
                 this doc does not enumerate them; the registry is authoritative
   vlm_provider: same options (VLM-capable providers only)
   image_gen_provider / video_gen_provider: string
-  llm_model: string | null       (null = provider default; e.g. "claude-sonnet-4-6")
+  llm_model: string | null       (null = provider default; e.g. "claude-sonnet-5-5")
   vlm_model: string | null
   image_gen_model / video_gen_model: string | null
   slow_mode: bool                (true throttles requests for rate-limited providers)
@@ -2074,7 +2074,7 @@ Switch LLM provider:
 read_file app/config/settings.json
 stream_edit app/config/settings.json
    model.llm_provider: "openai" → "anthropic"
-   model.llm_model: "<old>"     → "claude-sonnet-4-6"
+   model.llm_model: "<old>"     → "claude-sonnet-5-5"
 api_keys.anthropic must be set or the next LLM call fails (see ## Models).
 ```
 
@@ -3116,7 +3116,7 @@ ChatGPT subscription specifics:
 - The real hard failure is a Free-tier account (no Plus/Pro/Team): `CHATGPT_SUBSCRIPTION_REJECTED`. That's the "upgrade or switch to an API key" case — do not retry.
 - If the credential is disconnected mid-session, the client raises an actionable error telling the user to re-save model settings or reconnect.
 
-Grok subscription: same OAuth pattern against `api.x.ai`; models grok-4-0709 / grok-3. Anthropic subscription OAuth is deliberately NOT supported (forbidden by ToS).
+Grok subscription: same OAuth pattern against `api.x.ai`; models grok-4.3 / grok-4.7. Anthropic subscription OAuth is deliberately NOT supported (forbidden by ToS).
 
 ### Connection testing
 
@@ -3194,8 +3194,8 @@ When the user is undecided:
 ```
 Goal                                          Suggested provider
 ──────────────────────────────────────────    ──────────────────────────
-General chat / coding / reasoning             anthropic (claude-sonnet-4-6)
-                                              openai (gpt-5.2)
+General chat / coding / reasoning             anthropic (claude-sonnet-5-5)
+                                              openai (gpt-6.1-sol)
 Vision / image understanding                  any of: anthropic, openai, gemini, byteplus, grok
 Long-context document analysis                gemini (1-2M context)
                                               anthropic with extended cache

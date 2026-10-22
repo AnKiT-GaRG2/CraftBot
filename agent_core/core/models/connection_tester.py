@@ -728,7 +728,7 @@ def _test_grok(
             "provider": "grok",
             "error": "Missing API key",
         }
-    test_model = _resolve_test_model("grok", model, fallback="grok-3")
+    test_model = _resolve_test_model("grok", model, fallback="grok-4.3")
     try:
         with httpx.Client(timeout=timeout) as client:
             response = client.post(
