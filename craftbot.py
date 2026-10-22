@@ -230,13 +230,9 @@ def _enable_windows_vtp() -> None:
 
 _enable_windows_vtp()
 
-# Force UTF-8 output on Windows so Unicode box-drawing characters don't crash
-if sys.platform == "win32":
-    try:
-        sys.stdout.reconfigure(encoding="utf-8", errors="replace")
-        sys.stderr.reconfigure(encoding="utf-8", errors="replace")
-    except Exception:
-        pass
+from app.console import configure_console  # noqa: E402 -- after windowed stream initialization
+
+configure_console()
 
 _USE_COLOR = sys.stdout.isatty()
 
@@ -1676,6 +1672,13 @@ def cmd_install(extra_args: List[str]) -> bool:
                 f"  {DIM}Run 'python install.py' directly to see the full error.{RESET}"
             )
             return False
+
+        # install.py just recorded the interpreter it provisioned (often a
+        # downloaded sidecar). This process resolved — and cached — before
+        # that existed, so drop the cache or the check, start and auto-start
+        # below all fall back to the launcher Python (e.g. a system 3.14).
+        if _python_runtime is not None:
+            _python_runtime.resolve(refresh=True)
 
         # Verify critical packages are actually importable with the interpreter
         # that will run the service. install.py may exit 0 while packages ended

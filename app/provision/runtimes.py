@@ -78,6 +78,62 @@ class NodeStage:
         )
 
 
+class RipgrepStage:
+    """The rg binary bundled under app/vendor/ripgrep/ runs.
+
+    Nothing to download: the binary ships in the source. Unzipping the install
+    payload drops the executable bit on macOS and Linux, so apply() restores
+    it. Paths come from ctx.code_root because the installer runs this stage
+    from its own copy of the code against the tree it just extracted.
+    """
+
+    name = "ripgrep"
+    description = "ripgrep (file search)"
+    # Only grep_files needs it; the rest of the agent runs without it.
+    optional = True
+
+    def check(self, ctx: Context) -> StageResult:
+        from app import ripgrep_runtime
+
+        try:
+            path = ripgrep_runtime.binary_path(Path(ctx.code_root))
+        except RuntimeError as e:
+            return StageResult(Status.MISSING, str(e))
+        if not path.is_file():
+            return StageResult(Status.MISSING, f"bundled binary missing: {path}")
+        try:
+            res = subprocess.run(
+                [str(path), "--version"], capture_output=True, text=True, timeout=30
+            )
+        except OSError as e:
+            return StageResult(
+                Status.DEGRADED,
+                f"bundled binary will not run: {e}",
+                {"path": str(path)},
+            )
+        if res.returncode != 0:
+            return StageResult(
+                Status.DEGRADED,
+                f"bundled binary exited with {res.returncode}",
+                {"path": str(path)},
+            )
+        version = (res.stdout or "").splitlines()[0] if res.stdout else ""
+        return StageResult(Status.SATISFIED, version, {"path": str(path)})
+
+    def apply(self, ctx: Context, log: LogFn) -> StageResult:
+        from app import ripgrep_runtime
+
+        try:
+            path = ripgrep_runtime.binary_path(Path(ctx.code_root))
+        except RuntimeError as e:
+            return StageResult(Status.FAILED, str(e))
+        if not path.is_file():
+            return StageResult(Status.FAILED, f"bundled binary missing: {path}")
+        if sys.platform != "win32":
+            os.chmod(path, 0o755)
+        return self.check(ctx)
+
+
 def _probe_python(exe: str) -> Optional[tuple]:
     """(major, minor) of an interpreter, or None if it will not run.
 
