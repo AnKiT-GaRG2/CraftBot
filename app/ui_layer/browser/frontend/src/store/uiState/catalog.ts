@@ -88,8 +88,11 @@ export const UI_STATE = {
     }),
     /** By message id: "Show message" details disclosure. */
     messageDetailsExpanded: defineUiStateFamily('chat.messageDetailsExpanded', false, 'session'),
-    /** By [session id, artifact id]: explicit JSON state, separate from generated code. */
-    artifactState: defineUiStateFamily<Record<string, unknown>>('chat.artifactState', {}, 'session'),
+    /** By [session id, artifact id]: progress survives tabs/restarts in this browser profile. */
+    artifactState: defineUiStateFamily<Record<string, unknown>>('chat.artifactState', {}, 'preference', {
+      persistDefault: true,
+      writeThrough: true,
+    }),
     /** By session id: what the panel shows (outputs or the chat's
      *  browser, one at a time). */
     panelMode: defineUiStateFamily<ChatPanelMode>('chat.panelMode', 'auto', 'session', {

@@ -559,8 +559,8 @@ class AgentBase:
         Chat-message rows are cleared by the adapter (chat storage is a UI
         concern); this handles the agent-side state.
         """
-        if session_id in self.busy_sessions:
-            await self.request_run_stop(session_id)
+        # Runs can exist as queued continuations without a UI busy marker.
+        await self.request_run_stop(session_id)
         if not self.session_manager.clear_session(session_id):
             return False
         self._persist_llm_session(session_id)
@@ -1737,7 +1737,7 @@ class AgentBase:
             stopped = await self.session_runtime.request_stop(session_id)
         except Exception:
             logger.error(f"[RUN] request_stop failed for {session_id}", exc_info=True)
-            stopped = False
+            raise
         if not stopped:
             # Nothing was running (stale UI state) — settle the UI to idle.
             self._emit_run_state(session_id, "idle")

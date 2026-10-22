@@ -418,6 +418,7 @@ class BrowserCore:
         # the saved pages reopen at a launch, nothing is saved.
         self._restoring = False
         self._reopening: Set[str] = set()  # tabs whose reopened page has not loaded
+        self._reopen_tasks: Dict[str, asyncio.Task] = {}
         self._pages_saved: Optional[resume.Pages] = None
         self._pages_handle: Optional[asyncio.TimerHandle] = None
         self._frame_unsaved: Optional[resume.LastFrame] = None
@@ -858,6 +859,10 @@ class BrowserCore:
         self._watchdog_task = None
         self._cancel_saves()
         self._reopening.clear()
+        for task in self._reopen_tasks.values():
+            if not task.done():
+                task.cancel()
+        self._reopen_tasks.clear()
         self._pages_saved = None
         self._nav_refresh.clear()
         self._nav_dirty.clear()
@@ -1330,7 +1335,7 @@ class BrowserCore:
                 tab.url, tab.title, tab.loading = url, page.title, True
                 self._reopening.add(tab.id)
                 reopened[index] = tab
-                self.spawn(self._reopen(tab, url))
+                self._reopen_tasks[tab.id] = self.spawn(self._reopen(tab, url))
             viewed = reopened.get(saved.viewed) or next(iter(reopened.values()), None)
             if viewed is not None:
                 self.viewed_tab_id = viewed.id
@@ -1340,10 +1345,37 @@ class BrowserCore:
 
     async def _reopen(self, tab: Tab, url: str) -> None:
         try:
-            await self._open_in_background(tab, url)
+            await self._goto(tab, url)
         finally:
             self._reopening.discard(tab.id)
             self._schedule_nav_refresh(tab)
+
+    async def _wait_for_reopen(self, tab: Tab) -> None:
+        """Metadata can be restored before Chromium commits the document.
+
+        Only operations on this tab wait. Shield the shared navigation from
+        cancellation of an individual agent operation; teardown still cancels it.
+        """
+        task = self._reopen_tasks.get(tab.id)
+        if task is not None:
+            try:
+                await asyncio.shield(task)
+            except asyncio.CancelledError:
+                if tab.closed:
+                    raise self._closed_error(tab) from None
+                if not task.cancelled():
+                    raise
+            finally:
+                if task.done() and self._reopen_tasks.get(tab.id) is task:
+                    self._reopen_tasks.pop(tab.id, None)
+        if tab.closed:
+            raise self._closed_error(tab)
+
+    def _cancel_reopen(self, tab: Tab) -> None:
+        restore = self._reopen_tasks.pop(tab.id, None)
+        if restore is not None and not restore.done():
+            restore.cancel()
+        self._reopening.discard(tab.id)
 
     # ═════════════════════════════════════════════════════════════════════════
     # Streaming
@@ -1596,6 +1628,7 @@ class BrowserCore:
             return
         tab.user_control = take
         if take:
+            self._cancel_reopen(tab)
             tab.touch_user()
             self._agent_notice(
                 tab,
@@ -1737,6 +1770,8 @@ class BrowserCore:
         Runs BEFORE the input is dispatched to the page: an agent operation
         in flight on the tab sees ``user_control`` at its next step and stops.
         """
+        if takes_control:
+            self._cancel_reopen(tab)
         tab.touch_user()
         self._touch()
         if (
@@ -1818,6 +1853,7 @@ class BrowserCore:
                 try:
                     async with tab.lock:
                         if self.tabs.get(tab.id) is tab:
+                            await self._wait_for_reopen(tab)
                             refused = self._control_refusal(tab, op, params)
                             if refused is not None:
                                 return self._finish(refused, tab, owner=owner)
@@ -3072,7 +3108,7 @@ class BrowserCore:
         position = order.index(tab.id)
         del self.tabs[tab.id]
         tab.mark_closed(CLOSED_TAB)  # an operation on it ends at once
-        self._reopening.discard(tab.id)
+        self._cancel_reopen(tab)
         self._retire_secrets(tab)
         self._cuts.pop(tab.id, None)
         self._stream.forget_tab(tab.id)

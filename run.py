@@ -41,6 +41,9 @@ from app import python_runtime
 # Single resolved Node runtime — see app/node_runtime.py. install.py
 # downloads the sidecar when nothing suitable exists; run.py never installs.
 from app import node_runtime
+from app.console import configure_console
+
+configure_console()
 
 multiprocessing.freeze_support()
 
@@ -71,10 +74,10 @@ def _bootstrap_state():
     newly shipped default skills (app/state_sync.py: never overwrites a file,
     never restores one the user deleted).
 
-    A dev checkout is skipped: there, code and state are the same tree, which
-    is what makes a checkout convenient to work in.
+    When code and state share a tree no copy is needed. An explicit separate
+    CRAFTBOT_HOME is seeded in a dev checkout too.
     """
-    if _paths.is_dev_checkout():
+    if _paths.CODE_ROOT.resolve() == _paths.STATE_ROOT.resolve():
         return
 
     import shutil as _shutil

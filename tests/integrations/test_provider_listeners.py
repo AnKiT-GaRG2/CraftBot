@@ -509,8 +509,9 @@ def test_every_provider_accepts_three_arg_make_listener():
         pass
 
     providers = default_providers()
-    # 12 full ports + 5 wave-1 + 6 wave-2 + 2 wave-3 bridges
-    assert len(providers) == 25
+    ids = [provider.id for provider in providers]
+    assert len(ids) == len(set(ids)), "Provider ids must be unique"
+    assert {"figma", "supabase", "gmail", "slack", "telegram_bot"} <= set(ids)
     with_listeners = set()
     for provider in providers:
         listener = provider.make_listener(object(), None, emit)

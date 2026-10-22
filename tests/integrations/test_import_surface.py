@@ -24,7 +24,9 @@ from craftos_integrations import configure
 
 
 def _module_names():
-    configure(project_root=".")
+    from app.paths import STATE_ROOT
+
+    configure(project_root=str(STATE_ROOT))
     return sorted(
         m.name
         for m in pkgutil.walk_packages(

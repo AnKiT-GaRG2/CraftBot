@@ -1,5 +1,6 @@
 import { createSlice, current, isDraft, PayloadAction } from '@reduxjs/toolkit'
 import type { ChatMessage } from '../../types'
+import type { AppDispatch, RootState } from '../index'
 import { register } from '../socket/messageRegistry'
 import { UI_STATE } from '../uiState'
 import { findIndexInDraft } from './draftSearch'
@@ -228,19 +229,42 @@ register('chat_history', (data, dispatch) => {
   }))
 })
 
-register('chat_clear', (data, dispatch) => {
+// Progress may belong to an output outside the loaded/paginated history.
+// Keep reset tombstones so a stale legacy tab cannot migrate it back later.
+function resetArtifactProgress(sessionId: string | null, dispatch: AppDispatch, state: RootState) {
+  const prefix = UI_STATE.chat.artifactState('').key
+  for (const key of Object.keys(state.ui.values)) {
+    if (!key.startsWith(prefix)) continue
+    try {
+      const id = key.slice(prefix.length)
+      const scope: unknown = JSON.parse(id)
+      if (Array.isArray(scope) && scope.length === 2 && scope.every(item => typeof item === 'string') && (sessionId === null || scope[0] === sessionId)) {
+        dispatch(resetUiState(UI_STATE.chat.artifactState(id)))
+      }
+    } catch { /* Ignore malformed storage keys. */ }
+  }
+}
+
+register('chat_clear', (data, dispatch, getState) => {
   const d = data as { sessionId?: string | null } | undefined
+  resetArtifactProgress(d?.sessionId ?? null, dispatch, getState())
   dispatch(clearSession({ sessionId: d?.sessionId ?? null }))
 })
 
-register('session_cleared', (data, dispatch) => {
+register('session_cleared', (data, dispatch, getState) => {
   const d = data as { sessionId?: string } | undefined
-  if (d?.sessionId) dispatch(clearSession({ sessionId: d.sessionId }))
+  if (d?.sessionId) {
+    resetArtifactProgress(d.sessionId, dispatch, getState())
+    dispatch(clearSession({ sessionId: d.sessionId }))
+  }
 })
 
-register('session_deleted', (data, dispatch) => {
+register('session_deleted', (data, dispatch, getState) => {
   const d = data as { sessionId?: string } | undefined
-  if (d?.sessionId) dispatch(dropSession({ sessionId: d.sessionId }))
+  if (d?.sessionId) {
+    resetArtifactProgress(d.sessionId, dispatch, getState())
+    dispatch(dropSession({ sessionId: d.sessionId }))
+  }
 })
 
 // A Generative UI output was closed (possibly on another client): its code

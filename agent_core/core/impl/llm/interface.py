@@ -13,7 +13,7 @@ Hooks allow runtime-specific behavior:
 
 from __future__ import annotations
 
-import asyncio
+from agent_core.core.hooks.usage import dispatch_usage, to_thread_with_usage
 import contextvars
 import re
 import time
@@ -614,13 +614,7 @@ class LLMInterface:
                 output_tokens=output_tokens,
                 cached_tokens=cached_tokens,
             )
-            # Schedule the async hook on the event loop
-            try:
-                loop = asyncio.get_running_loop()
-                loop.create_task(self._report_usage(event))
-            except RuntimeError:
-                # No running event loop - create one for this call
-                asyncio.run(self._report_usage(event))
+            dispatch_usage(self._report_usage, event)
         except Exception as e:
             logger.warning(f"[LLM] Failed to report usage: {e}")
 
@@ -1260,7 +1254,7 @@ class LLMInterface:
         )
         token = _active_session_key.set(usage_key)
         try:
-            return await asyncio.to_thread(
+            return await to_thread_with_usage(
                 self._generate_response_sync,
                 system_prompt,
                 user_prompt,
@@ -2335,7 +2329,7 @@ class LLMInterface:
         self._begin_call(prompt_name=prompt_name, call_type=call_type, task_id=task_id)
         token = _active_session_key.set(f"{task_id}:{call_type}")
         try:
-            return await asyncio.to_thread(
+            return await to_thread_with_usage(
                 self._generate_response_with_session_sync,
                 task_id,
                 call_type,

@@ -15,7 +15,9 @@ from agent_core import action
         "responsive 360-900px wide, full-height page; the host shows the title. "
         "Colors must follow host light/dark: only --cb-{bg,surface,text,muted,border,accent,font} "
         "or light-dark(light,dark), not prefers-color-scheme; redraw canvas on window "
-        "'craftbot-theme'. Restore window.craftbot.state and "
+        "'craftbot-theme'. Static native input/select/textarea controls persist automatically: give "
+        "each a stable id (or data-craftbot-state key). Use persistence='manual' for dynamic/custom "
+        "canvas/3D/application state: restore window.craftbot.state and "
         "call window.craftbot.saveState(obj) on change (JSON, 64KB; store deadlines and "
         "timestamps). Fetched data needs loading/error states, real timestamps and checked "
         "units. Keep code compact. Afterwards send at most one short sentence; don't ask for "
@@ -36,6 +38,10 @@ from agent_core import action
         "artifact_id": {
             "type": "string",
             "description": "Optional: earlier render_ui id in this session, to revise with complete new HTML (keep state keys).",
+        },
+        "persistence": {
+            "type": "string",
+            "description": "controls (default): persist static native controls by stable id/data-craftbot-state, hydrated before scripts run; manual: explicitly restore/save dynamic DOM or custom state with craftbot.state/saveState; none: stateless output. Never persist secrets.",
         },
         "libraries": {
             "type": "array",
@@ -76,6 +82,7 @@ async def render_ui(input_data: dict) -> dict:
     from app.generative_ui import make_artifact, read_images
 
     try:
+        input_data = {"persistence": "controls", **input_data}
         artifact = make_artifact(input_data)
     except ValueError as exc:
         return {"status": "error", "message": str(exc)}

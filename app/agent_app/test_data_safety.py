@@ -1965,14 +1965,15 @@ with tempfile.TemporaryDirectory() as tmp:
 
     class _Gate26(_http26.BaseHTTPRequestHandler):
         def do_POST(self):
+            self.rfile.read(int(self.headers.get("Content-Length", "0")))
             SEEN26["token"] = self.headers.get("X-A2App-Token")
             ok = SEEN26["token"] == "tok-26-secret"
+            body = b'{"ok": true}' if ok else b'{"error": "agent token required"}'
             self.send_response(200 if ok else 401)
             self.send_header("Content-Type", "application/json")
+            self.send_header("Content-Length", str(len(body)))
             self.end_headers()
-            self.wfile.write(
-                b'{"ok": true}' if ok else b'{"error": "agent token required"}'
-            )
+            self.wfile.write(body)
 
         def log_message(self, *a):
             pass
@@ -1990,6 +1991,7 @@ with tempfile.TemporaryDirectory() as tmp:
     assert SEEN26["token"] == "tok-26-secret", "X-A2App-Token never crossed the wire"
     assert result.ok and result.status == 200, (result.status, result.detail)
     server26.shutdown()
+    server26.server_close()
 print("§26 changed-op smoke agent token: OK")
 
 print("\nData-safety acceptance: ALL GREEN")

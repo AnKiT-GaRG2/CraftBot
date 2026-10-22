@@ -6,8 +6,10 @@ import { configureStore } from '@reduxjs/toolkit'
 import { Provider } from 'react-redux'
 import ui, { setUiState } from '../src/store/slices/uiSlice'
 import agent from '../src/store/slices/agentSlice'
+import messages from '../src/store/slices/messagesSlice'
 import { UI_STATE, createUiPersistenceMiddleware, loadPersistedUiState } from '../src/store/uiState'
 import { OutputWorkspace, type BrowserPanelMode, type PanelLayout } from '../src/components/GenerativeUI/OutputWorkspace'
+import { QuestionBox } from '../src/components/Chat/QuestionBox'
 import { ChatMessageItem } from '../src/pages/Chat/ChatMessage'
 import type { GenerativeUIArtifact, ChatMessage } from '../src/types'
 import i18n from '../src/i18n/config'
@@ -16,7 +18,7 @@ import cooking from './fixtures/cooking.html?raw'
 import weather from './fixtures/weather.html?raw'
 import design from './fixtures/design.html?raw'
 
-const store = configureStore({ reducer: { ui, agent }, preloadedState: { ui: loadPersistedUiState(), agent: { ...agent(undefined, { type: '@@init' }), profilePictureUrl: 'data:image/svg+xml,%3Csvg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 32 32"%3E%3Ccircle cx="16" cy="16" r="14" fill="%23FF4F18"/%3E%3C/svg%3E' } }, middleware: getDefault => getDefault().concat(createUiPersistenceMiddleware()) })
+export const store = configureStore({ reducer: { ui, agent, messages }, preloadedState: { ui: loadPersistedUiState(), agent: { ...agent(undefined, { type: '@@init' }), profilePictureUrl: 'data:image/svg+xml,%3Csvg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 32 32"%3E%3Ccircle cx="16" cy="16" r="14" fill="%23FF4F18"/%3E%3C/svg%3E' } }, middleware: getDefault => getDefault().concat(createUiPersistenceMiddleware()) })
 const examples: Record<string, GenerativeUIArtifact> = {
   Cooking: { id: 'cooking', title: 'Cooking guide', html: cooking, revision: 1, connect_origins: [] },
   Weather: { id: 'weather', title: 'Weather explorer', html: weather, revision: 1, connect_origins: ['https://api.open-meteo.com', 'https://geocoding-api.open-meteo.com'] },
@@ -85,4 +87,20 @@ function Harness() {
     </div>
   </main>
 }
-createRoot(document.getElementById('root')!).render(<Provider store={store}><Harness /></Provider>)
+// Match the real chat's keyed question replacement: a resolved question
+// immediately reveals the next one at the same place.
+function QuestionHarness() {
+  const [resolved, setResolved] = useState<{ id: string; value: string }[]>([])
+  const index = resolved.length + 1
+  const question: ChatMessage = {
+    messageId: `question-${index}`, sessionId: 'demo', sender: 'CraftBot',
+    content: `Question ${index}?`, timestamp: index, style: 'agent', isQuestion: true,
+    options: [{ label: `Choice ${index}`, value: `choice-${index}` }],
+  }
+  const answer = (value: string) => setResolved(items => [...items, { id: question.messageId, value }])
+  return <main style={{ width: 600, padding: 20 }}>
+    {index <= 3 && <QuestionBox key={question.messageId} question={question} queueTotal={4 - index} onAnswer={answer} onDismiss={() => answer('__dismissed__')} />}
+    <output aria-label="Resolved questions">{JSON.stringify(resolved)}</output>
+  </main>
+}
+createRoot(document.getElementById('root')!).render(<Provider store={store}>{new URLSearchParams(location.search).has('questions') ? <QuestionHarness /> : <Harness />}</Provider>)
