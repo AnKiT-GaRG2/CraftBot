@@ -16,7 +16,6 @@
     "processing_threshold": 23
   },
   "context": {
-    "reserve_tokens": 16384,
     "keep_recent_tokens": 20000
   },
   "model": {

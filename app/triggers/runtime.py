@@ -26,6 +26,7 @@ from agent_core.core.impl.trigger.session_queue import (
     QueueClosed,
 )
 from agent_core.core.session import MAIN_SESSION_ID
+from agent_core.core.state.session import StateSession
 from app.triggers.sources import TriggerSource
 
 if TYPE_CHECKING:
@@ -86,6 +87,26 @@ EXCLUSIVE_SOURCES: frozenset[str] = frozenset({TriggerSource.AGENT_APP_CRASH_FIX
 # fields these are not interchangeable, so they are carried across a merge
 # rather than silently dropped with the rest of an extra's payload.
 _IDENTITY_KEYS = ("project_id", "factory_mission_id")
+
+
+def _compatible_message_origins(base: Trigger, other: Trigger) -> bool:
+    """Telegram turns cannot inherit another contact's account or authority."""
+    left, right = base.payload or {}, other.payload or {}
+    if "telegram_bot" not in (
+        left.get("integration_type"),
+        right.get("integration_type"),
+    ):
+        return True
+    keys = (
+        "integration_type",
+        "contact_id",
+        "channel_id",
+        "account",
+        "is_self_message",
+        "auto_reply_allowed",
+        "owner_authenticated",
+    )
+    return all(left.get(k) == right.get(k) for k in keys)
 
 
 def _merge_triggers(base: Trigger, extras: list[Trigger]) -> Trigger:
@@ -162,9 +183,25 @@ def _merge_triggers(base: Trigger, extras: list[Trigger]) -> Trigger:
     base.payload = base.payload or {}
     for t in extras:
         p = t.payload or {}
-        for key in ("platform", "contact_id", "channel_id"):
-            if p.get(key):
-                base.payload[key] = p[key]
+        if p.get("platform"):
+            # The origin is a coherent record. Mixing a previous owner's
+            # self flag/account with the latest contact grants the wrong
+            # permissions or routes replies through the wrong bot.
+            for key in (
+                "platform",
+                "contact_id",
+                "contact_name",
+                "channel_id",
+                "channel_name",
+                "account",
+                "account_alias",
+                "integration_type",
+                "message_id",
+            ):
+                base.payload[key] = p.get(key, "")
+            base.payload["is_self_message"] = p.get("is_self_message") is True
+            base.payload["auto_reply_allowed"] = p.get("auto_reply_allowed") is True
+            base.payload["owner_authenticated"] = p.get("owner_authenticated") is True
         # Work identity, not routing: without these the factory cannot tell
         # which mission this run belonged to, so it can neither close it nor
         # redispatch it (see EXCLUSIVE_SOURCES). Never overwrite the base's
@@ -172,8 +209,6 @@ def _merge_triggers(base: Trigger, extras: list[Trigger]) -> Trigger:
         for key in _IDENTITY_KEYS:
             if p.get(key) and not base.payload.get(key):
                 base.payload[key] = p[key]
-        if p.get("is_self_message"):
-            base.payload["is_self_message"] = True
         for list_key in ("workflow_skills", "workflow_action_sets"):
             incoming = p.get(list_key)
             if incoming:
@@ -409,7 +444,10 @@ class SessionRuntimeManager:
         )
 
         logger.info(f"[SessionRuntime] Loop started for session {session_id}")
-        with session_ctx:
+        # Bind the session for everything its turns run (actions, sub-agents,
+        # LLM calls): the LLM layer reads the session's reasoning choice
+        # through this binding.
+        with session_ctx, StateSession.bind(session_id):
             while self._running:
                 try:
                     trig = await queue.get()
@@ -430,7 +468,10 @@ class SessionRuntimeManager:
                 else:
                     try:
                         extras = await queue.pop_due_batch(
-                            exclude_sources=EXCLUSIVE_SOURCES
+                            exclude_sources=EXCLUSIVE_SOURCES,
+                            predicate=lambda other: _compatible_message_origins(
+                                trig, other
+                            ),
                         )
                     except Exception as e:
                         logger.warning(f"[SessionRuntime] Batch drain failed: {e}")
