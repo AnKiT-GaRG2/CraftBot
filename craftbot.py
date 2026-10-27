@@ -755,7 +755,9 @@ def cmd_start(extra_args: List[str]) -> bool:
     open_browser = "--cli" not in run_args and "--no-open-browser" not in extra_args
     if open_browser:
         browser_url = _frontend_url(extra_args)
-        print(f"  {DIM}░░{RESET} {ORANGE}{browser_url}{RESET}")
+        # The URL is only printed once the agent can serve it: a link shown
+        # earlier is clickable but returns 404 until boot() finishes.
+        print(f"  {DIM}░░ Starting up — the URL appears when CraftBot is ready{RESET}")
         # Wait for the agent to actually be up before opening a tab at it.
         #
         # This used to open immediately after _wait_for_startup_exit(), which
@@ -768,6 +770,7 @@ def cmd_start(extra_args: List[str]) -> bool:
         # boot() finished (see app/paths.py AGENT_READY_FILE), so waiting for
         # the marker here is waiting for the real thing.
         if _wait_for_ready_marker(ready_log_offset, BROWSER_READY_TIMEOUT_S):
+            print(f"  {DIM}░░{RESET} {ORANGE}{browser_url}{RESET}")
             _open_browser_detached(browser_url)
         else:
             print(
